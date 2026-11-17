@@ -133,14 +133,15 @@ def main():
         out = finish(grade(lin, f), f, notitle)
         bgr = (np.clip(out[..., ::-1], 0, 1) * 255 + 0.5).astype(np.uint8)
         cv2.imwrite(os.path.join(dst, '%04d.png' % f), bgr)
-        if sheet:
+        if sheet and (len(files) <= 60 or files.index(p) % max(1, len(files) // 60) == 0):
             th = cv2.resize(bgr, (640, 360), interpolation=cv2.INTER_AREA)
             cv2.putText(th, 'f%d t=%.2f' % (f, f / 24.0), (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
             thumbs.append(th)
         if len(files) <= 40 or f % 48 == 0:
             print('post', f, 'mean', round(float(out.mean()), 3), flush=True)
     if sheet and thumbs:
-        cols = 3
+        cols = 3 if len(thumbs) <= 30 else 6
+        thumbs = [cv2.resize(t_, (320, 180)) for t_ in thumbs] if cols == 6 else thumbs
         while len(thumbs) % cols:
             thumbs.append(np.zeros_like(thumbs[0]))
         rows = [np.hstack(thumbs[i:i + cols]) for i in range(0, len(thumbs), cols)]

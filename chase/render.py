@@ -18,13 +18,13 @@ CFG = json.load(open(os.path.join(ROOT, 'vehicles.json'), encoding='utf-8'))
 
 P = {
     'world': 0.6,            # HDRI の強さ
-    'sky_rot': 0.911,        # 夕焼けを進行方向(+Y)に向ける回転
+    'sky_rot': 4.053,        # 夕焼けを進行方向(+Y)に向ける回転
     'film_exposure': 0.5,
     'lamp_power': 26000.0,   # 街灯(スポット)
     'lamp_color': [1.0, 0.60, 0.27],
     'lamp_emit': 500.0,
     'head_power': 8000.0,   # 車のヘッドライト(1台1灯のスポット)
-    'bike_head_power': 4000.0,
+    'bike_head_power': 2200.0,
     'head_emit': 500.0,
     'tail_emit': 40.0,
     'tail_point': 90.0,
