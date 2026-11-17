@@ -82,14 +82,14 @@ def title_layer(w, h):
     if font is None:
         print('WARNING: no CJK font found; title skipped'); _title[(w, h)] = lay; return lay
     sh = Image.new('RGBA', (w, h), (0, 0, 0, 0)); d = ImageDraw.Draw(sh)
-    x0, y0 = int(110 * k), int(h - 150 * k - 290 * k)
+    x0 = int(110 * k)
     def text(draw, fill):
         x = x0
         for ch in '追跡':
-            draw.text((x, y0), ch, font=font, fill=fill); x += int(draw.textlength(ch, font=font) + 14 * k)
+            draw.text((x, int(h - 212 * k)), ch, font=font, fill=fill, anchor='ld'); x += int(draw.textlength(ch, font=font) + 14 * k)
         x = x0 + int(8 * k)
         for ch in 'HIGHWAY CHASE':
-            draw.text((x, y0 + int(232 * k)), ch, font=small, fill=fill); x += int(draw.textlength(ch, font=small) + 20 * k)
+            draw.text((x, int(h - 150 * k)), ch, font=small, fill=fill, anchor='ld'); x += int(draw.textlength(ch, font=small) + 20 * k)
     text(d, (0, 0, 0, 200))
     sh = sh.filter(ImageFilter.GaussianBlur(10 * k))
     lay = Image.alpha_composite(lay, sh)

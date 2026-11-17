@@ -23,8 +23,8 @@ P = {
     'lamp_power': 26000.0,   # 街灯(スポット)
     'lamp_color': [1.0, 0.60, 0.27],
     'lamp_emit': 500.0,
-    'head_power': 14000.0,   # 車のヘッドライト(1台1灯のスポット)
-    'bike_head_power': 12000.0,
+    'head_power': 8000.0,   # 車のヘッドライト(1台1灯のスポット)
+    'bike_head_power': 4000.0,
     'head_emit': 500.0,
     'tail_emit': 40.0,
     'tail_point': 90.0,
@@ -565,9 +565,9 @@ def light_data(kind):
     if kind in _lights:
         return _lights[kind]
     if kind == 'car_head':
-        l = bpy.data.lights.new(kind, 'SPOT'); l.energy = P['head_power']; l.color = (1.0, 0.92, 0.80); l.spot_size = math.radians(62); l.spot_blend = 0.55; l.shadow_soft_size = 0.12
+        l = bpy.data.lights.new(kind, 'SPOT'); l.energy = P['head_power']; l.color = (1.0, 0.92, 0.80); l.spot_size = math.radians(66); l.spot_blend = 0.85; l.shadow_soft_size = 0.12
     elif kind == 'bike_head':
-        l = bpy.data.lights.new(kind, 'SPOT'); l.energy = P['bike_head_power']; l.color = (1.0, 0.95, 0.86); l.spot_size = math.radians(56); l.spot_blend = 0.6; l.shadow_soft_size = 0.06
+        l = bpy.data.lights.new(kind, 'SPOT'); l.energy = P['bike_head_power']; l.color = (1.0, 0.95, 0.86); l.spot_size = math.radians(64); l.spot_blend = 0.9; l.shadow_soft_size = 0.06
     else:
         l = bpy.data.lights.new(kind, 'POINT'); l.energy = P['tail_point']; l.color = (1.0, 0.04, 0.02); l.shadow_soft_size = 0.05
     _lights[kind] = l
