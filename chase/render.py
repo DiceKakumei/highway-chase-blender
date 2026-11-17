@@ -334,7 +334,11 @@ def facade_material():
     u, v = sep.outputs['X'], sep.outputs['Y']
 
     def noise2(a, b_):
-        comb = nt.nodes.new('ShaderNodeCombineXYZ'); nt.links.new(a, comb.inputs[0]); nt.links.new(b_, comb.inputs[1])
+        comb = nt.nodes.new('ShaderNodeCombineXYZ'); nt.links.new(a, comb.inputs[0])
+        if isinstance(b_, (int, float)):
+            comb.inputs[1].default_value = b_
+        else:
+            nt.links.new(b_, comb.inputs[1])
         wn = nt.nodes.new('ShaderNodeTexWhiteNoise'); wn.noise_dimensions = '2D'; nt.links.new(comb.outputs[0], wn.inputs['Vector'])
         sc = nt.nodes.new('ShaderNodeSeparateColor'); nt.links.new(wn.outputs['Color'], sc.inputs[0])
         return wn.outputs['Value'], sc
