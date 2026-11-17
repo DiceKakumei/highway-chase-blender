@@ -2,8 +2,8 @@
 usage: python tools/post.py <exr_dir> <png_dir> [--params JSON] [--sheet sheet.jpg] [--notitle]
 コマ番号 f はファイル名(0024.exr)から取り、t = f / 24。"""
 import os, sys, json, glob
-os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
 import numpy as np, cv2
+import OpenEXR
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 G = {
@@ -55,6 +55,15 @@ def grade(lin, f):
     rs = np.random.RandomState(f)
     out = out + rs.normal(0, G['grain'], (h, w, 1)).astype(np.float32) * (1 - out) * 1.0
     return np.clip(out, 0, 1)
+
+
+def read_exr(p):
+    ch = OpenEXR.File(p).channels()
+    if 'RGB' in ch:
+        return np.asarray(ch['RGB'].pixels, dtype=np.float32)
+    if 'RGBA' in ch:
+        return np.asarray(ch['RGBA'].pixels, dtype=np.float32)[..., :3]
+    return np.stack([np.asarray(ch[c].pixels, dtype=np.float32) for c in 'RGB'], -1)
 
 
 _title = {}
@@ -120,10 +129,7 @@ def main():
     thumbs = []
     for p in files:
         f = int(os.path.basename(p)[:4])
-        lin = cv2.imread(p, cv2.IMREAD_UNCHANGED)
-        if lin is None:
-            print('cannot read', p); continue
-        lin = lin[..., :3][..., ::-1].astype(np.float32)
+        lin = read_exr(p)
         out = finish(grade(lin, f), f, notitle)
         bgr = (np.clip(out[..., ::-1], 0, 1) * 255 + 0.5).astype(np.uint8)
         cv2.imwrite(os.path.join(dst, '%04d.png' % f), bgr)

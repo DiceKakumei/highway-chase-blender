@@ -17,23 +17,23 @@ import motion as M   # noqa: E402
 CFG = json.load(open(os.path.join(ROOT, 'vehicles.json'), encoding='utf-8'))
 
 P = {
-    'world': 1.0,            # HDRI の強さ
+    'world': 0.6,            # HDRI の強さ
     'sky_rot': 0.911,        # 夕焼けを進行方向(+Y)に向ける回転
-    'film_exposure': 0.42,
-    'lamp_power': 20000.0,   # 街灯(スポット)
+    'film_exposure': 0.5,
+    'lamp_power': 26000.0,   # 街灯(スポット)
     'lamp_color': [1.0, 0.60, 0.27],
-    'lamp_emit': 700.0,
-    'head_power': 42000.0,   # 車のヘッドライト(1台1灯のスポット)
-    'bike_head_power': 30000.0,
+    'lamp_emit': 500.0,
+    'head_power': 14000.0,   # 車のヘッドライト(1台1灯のスポット)
+    'bike_head_power': 12000.0,
     'head_emit': 500.0,
-    'tail_emit': 45.0,
-    'tail_point': 500.0,
+    'tail_emit': 40.0,
+    'tail_point': 90.0,
     'tail_mask_emit': 60.0,
-    'win_emit': 9.0,
-    'city_emit': 60.0,
-    'fog_dist': 1500.0,
+    'win_emit': 3.0,
+    'city_emit': 30.0,
+    'fog_dist': 1100.0,
     'fog_cool': [0.50, 0.42, 0.60],
-    'fog_warm': [1.7, 0.95, 0.9],
+    'fog_warm': [1.2, 0.72, 0.72],
     'coat': 0.7,
     'body_rough_mul': 0.75,
     'motion_blur': 1,
@@ -162,10 +162,13 @@ def add_fog(mat):
     nt.links.new(src, gn.inputs[0]); nt.links.new(gn.outputs[0], out.inputs['Surface'])
 
 
-def emission_material(name, color, strength):
+def emission_material(name, color, strength, one_sided=False):
     mat, nt, out = new_material(name)
     em = nt.nodes.new('ShaderNodeEmission')
     em.inputs['Color'].default_value = (*color, 1.0); em.inputs['Strength'].default_value = strength
+    if one_sided:                                  # 裏側からは光って見えないようにする
+        geo = nt.nodes.new('ShaderNodeNewGeometry')
+        nt.links.new(math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', 1.0, geo.outputs['Backfacing']), strength), em.inputs['Strength'])
     nt.links.new(em.outputs[0], out.inputs['Surface'])
     add_fog(mat)
     return mat
@@ -323,25 +326,37 @@ def build_road():
 
 
 def facade_material():
+    """ビルの外壁: 1.8 m ごとの窓、5.4 m ごとの部屋単位で点灯。棟ごとに点灯率を変える。"""
     mat, nt, out = new_material('Facade')
     b = principled(nt, out)
     uv = nt.nodes.new('ShaderNodeTexCoord')
     sep = nt.nodes.new('ShaderNodeSeparateXYZ'); nt.links.new(uv.outputs['UV'], sep.inputs[0])
-    cu = math_node(nt, 'DIVIDE', sep.outputs['X'], 3.2); cv = math_node(nt, 'DIVIDE', sep.outputs['Y'], 3.6)
-    iu = math_node(nt, 'FLOOR', cu); iv = math_node(nt, 'FLOOR', cv)
-    fu = math_node(nt, 'FRACT', cu); fv = math_node(nt, 'FRACT', cv)
-    comb = nt.nodes.new('ShaderNodeCombineXYZ'); nt.links.new(iu, comb.inputs[0]); nt.links.new(iv, comb.inputs[1])
-    wn = nt.nodes.new('ShaderNodeTexWhiteNoise'); wn.noise_dimensions = '2D'; nt.links.new(comb.outputs[0], wn.inputs['Vector'])
-    sc = nt.nodes.new('ShaderNodeSeparateColor'); nt.links.new(wn.outputs['Color'], sc.inputs[0])
+    u, v = sep.outputs['X'], sep.outputs['Y']
+
+    def noise2(a, b_):
+        comb = nt.nodes.new('ShaderNodeCombineXYZ'); nt.links.new(a, comb.inputs[0]); nt.links.new(b_, comb.inputs[1])
+        wn = nt.nodes.new('ShaderNodeTexWhiteNoise'); wn.noise_dimensions = '2D'; nt.links.new(comb.outputs[0], wn.inputs['Vector'])
+        sc = nt.nodes.new('ShaderNodeSeparateColor'); nt.links.new(wn.outputs['Color'], sc.inputs[0])
+        return wn.outputs['Value'], sc
+    cv = math_node(nt, 'DIVIDE', v, 3.3); iv = math_node(nt, 'FLOOR', cv); fv = math_node(nt, 'FRACT', cv)
+    cu = math_node(nt, 'DIVIDE', u, 1.8); iu = math_node(nt, 'FLOOR', cu); fu = math_node(nt, 'FRACT', cu)
+    room_u = math_node(nt, 'FLOOR', math_node(nt, 'DIVIDE', u, 5.4))
+    bid = math_node(nt, 'FLOOR', math_node(nt, 'DIVIDE', u, 1000.0))
+    r_room, sc_room = noise2(room_u, iv)
+    r_win, _ = noise2(iu, math_node(nt, 'ADD', iv, 500.0))
+    r_bld, _ = noise2(bid, 7.0)
     win = math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', fu, 0.10), math_node(nt, 'LESS_THAN', fu, 0.90)),
-                    math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', fv, 0.22), math_node(nt, 'LESS_THAN', fv, 0.82)))
-    lit = math_node(nt, 'GREATER_THAN', wn.outputs['Value'], 0.66)
+                    math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', fv, 0.30), math_node(nt, 'LESS_THAN', fv, 0.80)))
+    thr = math_node(nt, 'ADD', 0.52, math_node(nt, 'MULTIPLY', r_bld, 0.44))
+    lit = math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', r_room, thr), math_node(nt, 'GREATER_THAN', r_win, 0.22))
     e = math_node(nt, 'MULTIPLY', win, lit)
-    col = vlerp(nt, (1.0, 0.72, 0.42), (0.72, 0.86, 1.0), math_node(nt, 'GREATER_THAN', sc.outputs[1], 0.72))
-    strength = math_node(nt, 'MULTIPLY', e, math_node(nt, 'MULTIPLY', math_node(nt, 'ADD', sc.outputs[2], 0.35), P['win_emit']))
+    col = vlerp(nt, (1.0, 0.70, 0.40), (0.75, 0.86, 1.0), math_node(nt, 'GREATER_THAN', sc_room.outputs[1], 0.70))
+    bright = math_node(nt, 'ADD', math_node(nt, 'POWER', sc_room.outputs[2], 2.0), 0.12)
+    strength = math_node(nt, 'MULTIPLY', e, math_node(nt, 'MULTIPLY', bright, P['win_emit']))
     nt.links.new(col, b.inputs['Emission Color']); nt.links.new(strength, b.inputs['Emission Strength'])
-    nt.links.new(vlerp(nt, (0.10, 0.10, 0.105), (0.012, 0.014, 0.02), win), b.inputs['Base Color'])
-    nt.links.new(math_node(nt, 'SUBTRACT', 0.7, math_node(nt, 'MULTIPLY', win, 0.58)), b.inputs['Roughness'])
+    wall = vlerp(nt, (0.055, 0.055, 0.06), (0.12, 0.115, 0.11), r_bld)
+    nt.links.new(vlerp(nt, wall, (0.012, 0.014, 0.02), win), b.inputs['Base Color'])
+    nt.links.new(math_node(nt, 'SUBTRACT', 0.75, math_node(nt, 'MULTIPLY', win, 0.65)), b.inputs['Roughness'])
     add_fog(mat)
     return mat
 
@@ -454,7 +469,7 @@ _lamp_mats = {}
 
 def lamp_mat(t):
     if t not in _lamp_mats:
-        _lamp_mats[t] = emission_material('Lamp_' + t, (1.0, 0.93, 0.80) if t == 'head' else (1.0, 0.03, 0.02), P['head_emit'] if t == 'head' else P['tail_emit'])
+        _lamp_mats[t] = emission_material('Lamp_' + t, (1.0, 0.93, 0.80) if t == 'head' else (1.0, 0.03, 0.02), P['head_emit'] if t == 'head' else P['tail_emit'], one_sided=True)
     return _lamp_mats[t]
 
 
@@ -523,8 +538,9 @@ def build_proto(name):
             for j in range(N):
                 a = math.tau * j / N
                 V.append((x + math.cos(a) * lp['w'] / 2, y, lp['z'] + math.sin(a) * lp['h'] / 2))
-            for j in range(N):
-                F.append((n, n + 1 + j, n + 1 + (j + 1) % N)); FM.append(0 if lp['t'] == 'head' else 1)
+            for j in range(N):                                      # normal faces outwards (+Y for head, -Y for tail)
+                tri = (n, n + 1 + (j + 1) % N, n + 1 + j) if lp['t'] == 'head' else (n, n + 1 + j, n + 1 + (j + 1) % N)
+                F.append(tri); FM.append(0 if lp['t'] == 'head' else 1)
             if ends[lp['t']] is None or abs(y) > abs(ends[lp['t']][0]):
                 ends[lp['t']] = (y, lp['z'])
             print('   lamp %s x=%.2f z=%.2f -> y=%.3f %s' % (lp['t'], x, lp['z'], y, '' if hit[0] is not None else '(no hit)'))
