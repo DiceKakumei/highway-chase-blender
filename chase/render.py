@@ -20,14 +20,14 @@ P = {
     'world': 0.6,            # HDRI の強さ
     'sky_rot': 4.053,        # 夕焼けを進行方向(+Y)に向ける回転
     'film_exposure': 0.5,
-    'lamp_power': 26000.0,   # 街灯(スポット)
+    'lamp_power': 11000.0,   # 街灯(スポット)
     'lamp_color': [1.0, 0.60, 0.27],
     'lamp_emit': 500.0,
-    'head_power': 8000.0,   # 車のヘッドライト(1台1灯のスポット)
-    'bike_head_power': 2200.0,
+    'head_power': 3500.0,   # 車のヘッドライト(1台1灯のスポット)
+    'bike_head_power': 1100.0,
     'head_emit': 500.0,
     'tail_emit': 40.0,
-    'tail_point': 90.0,
+    'tail_point': 50.0,
     'tail_mask_emit': 60.0,
     'win_emit': 3.0,
     'city_emit': 30.0,
@@ -48,7 +48,7 @@ P = {
     'asph_bump': 1.3,
     'patch_prob': 0.22,      # 補修跡が出る割合
     'paint_wear': 0.36,      # 白線のかすれ(大きいほど多い)
-    'fac_emit': 4.0,         # 窓あかり
+    'fac_emit': 3.0,         # 窓あかり
     'glass_wobble': 0.03,    # ガラス1枚ごとの傾き
     'obs_emit': 60.0,        # 航空障害灯
     'reflect_emit': 4.0,     # ガードレールの反射板
@@ -382,7 +382,7 @@ def asphalt_material():
     col = vlerp(nt, col, vmath(nt, 'SCALE', col, scale=0.58), patch)
     col = vlerp(nt, col, (0.150, 0.138, 0.118), math_node(nt, 'MULTIPLY', dust, 0.55))
     col = vlerp(nt, col, (0.010, 0.010, 0.011), seal)
-    col = vlerp(nt, col, vmath(nt, 'SCALE', (0.20, 0.195, 0.18), scale=macro), header)
+    col = vlerp(nt, col, vmath(nt, 'SCALE', (0.15, 0.147, 0.138), scale=macro), header)
     col = vlerp(nt, col, (0.09, 0.09, 0.10), steel)
     dirt = math_node(nt, 'ADD', 0.72, math_node(nt, 'MULTIPLY', noise(nt, pos, 0.6, 3.0), 0.36))
     col = vlerp(nt, col, vmath(nt, 'SCALE', (0.66, 0.66, 0.63), scale=dirt), pa)
@@ -428,7 +428,12 @@ def concrete_material():
     joint = math_node(nt, 'LESS_THAN', math_node(nt, 'FRACT', math_node(nt, 'DIVIDE', y, 8.0)), 0.004)
     k = math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', streak, top), 0.5)),
                   math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', grime, 0.45)), math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', joint, 0.75))))
-    nt.links.new(vmath(nt, 'SCALE', d.outputs['Color'], scale=math_node(nt, 'MULTIPLY', k, 0.62)), b.inputs['Base Color'])
+    grey = nt.nodes.new('ShaderNodeCombineXYZ')
+    lum = luminance(nt, d.outputs['Color'])
+    for i_ in range(3):
+        nt.links.new(lum, grey.inputs[i_])
+    dcol = vlerp(nt, d.outputs['Color'], grey.outputs[0], 0.65)
+    nt.links.new(vmath(nt, 'SCALE', dcol, scale=math_node(nt, 'MULTIPLY', k, 0.62)), b.inputs['Base Color'])
     nt.links.new(math_node(nt, 'ADD', r.outputs['Color'], math_node(nt, 'MULTIPLY', streak, 0.1), clamp=True), b.inputs['Roughness'])
     bump = nt.nodes.new('ShaderNodeBump'); bump.inputs['Strength'].default_value = 0.35; bump.inputs['Distance'].default_value = 0.02
     nt.links.new(luminance(nt, d.outputs['Color']), bump.inputs['Height']); nt.links.new(bump.outputs[0], b.inputs['Normal'])
@@ -554,11 +559,14 @@ def facade_material(key):
         e = vmath(nt, 'SCALE', emi.outputs['Color'], scale=math_node(nt, 'MULTIPLY', on, math_node(nt, 'ADD', 0.55, math_node(nt, 'MULTIPLY', hc.outputs[2], 0.9))))
     else:
         # 発光マップがない素材: ガラス(金属マップ)のマスごとに点灯。上ほど明るく(天井灯)、暖色/寒色を混ぜる
-        on = math_node(nt, 'GREATER_THAN', hv, math_node(nt, 'SUBTRACT', 0.97, math_node(nt, 'MULTIPLY', litf, 0.55)))
+        hrun, _ = hash2(nt, math_node(nt, 'ADD', math_node(nt, 'FLOOR', math_node(nt, 'DIVIDE', px, 3.0)), math_node(nt, 'MULTIPLY', seed, 811.0)),
+                        math_node(nt, 'ADD', math_node(nt, 'FLOOR', py), math_node(nt, 'MULTIPLY', seed, 353.0)))
+        on = math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', hrun, math_node(nt, 'SUBTRACT', 0.96, math_node(nt, 'MULTIPLY', litf, 0.32))),
+                       math_node(nt, 'GREATER_THAN', hv, 0.25))
         gradv = math_node(nt, 'ADD', 0.45, math_node(nt, 'MULTIPLY', math_node(nt, 'FRACT', py), 0.8))
         inter = math_node(nt, 'ADD', 0.55, math_node(nt, 'MULTIPLY', noise(nt, t, c['tile'] * 1.7, 2.0), 0.9))
         lc = vlerp(nt, (1.0, 0.72, 0.42), (0.78, 0.88, 1.0), math_node(nt, 'GREATER_THAN', hc.outputs[1], 0.55))
-        e = vmath(nt, 'SCALE', lc, scale=math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', on, metal), math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', gradv, inter), 0.5)))
+        e = vmath(nt, 'SCALE', lc, scale=math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', on, metal), math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', gradv, inter), 0.24)))
 
     # ガラスは空を映す(金属扱い)。映り込みの色 = ガラスの色。暗すぎるガラスは少し持ち上げる
     base = vlerp(nt, base, vmath(nt, 'MAXIMUM', base, (0.075, 0.09, 0.115)), metal)
