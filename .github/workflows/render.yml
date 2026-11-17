@@ -1,0 +1,143 @@
+name: render
+# 高速チェイス(写実版)。コマを分割して headless Blender (Cycles, CPU) で描画し、Release に添付する。
+#   gh workflow run render.yml -f frames="24,84,125" -f chunks=3 -f samples=48 -f res=960x540
+#   gh workflow run render.yml -f frames="0-719" -f chunks=40 -f samples=64 -f res=1280x720 -f video=1
+on:
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: "コマ (例: 24,84 または 0-719)"
+        default: "24,84,125,168,211,254,295,329,382,402,438,475,533,566,612"
+      chunks:
+        description: "分割数(並列ジョブ数)"
+        default: "5"
+      samples:
+        default: "48"
+      res:
+        default: "960x540"
+      params:
+        description: "render.py の P の上書き(JSON)"
+        default: "{}"
+      grade:
+        description: "post.py の G の上書き(JSON)"
+        default: "{}"
+      video:
+        description: "1 = 連番を結合して音声つきの mp4 にする"
+        default: "0"
+permissions:
+  contents: write
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      tag: ${{ steps.m.outputs.tag }}
+    steps:
+      - id: m
+        env:
+          FRAMES: ${{ inputs.frames }}
+          CHUNKS: ${{ inputs.chunks }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          fr = []
+          for part in os.environ['FRAMES'].split(','):
+              part = part.strip()
+              if not part: continue
+              if '-' in part:
+                  a, b = part.split('-'); fr += list(range(int(a), int(b) + 1))
+              else:
+                  fr.append(int(part))
+          n = max(1, min(int(os.environ['CHUNKS']), len(fr)))
+          items = []
+          for i in range(n):
+              sub = fr[i * len(fr) // n:(i + 1) * len(fr) // n]
+              if sub:
+                  items.append({"idx": "%03d" % i, "frames": ",".join(str(f) for f in sub)})
+          print("matrix=" + json.dumps({"include": items}))
+          print("tag=r${{ github.run_number }}")
+          PY
+      - run: gh release create "r${{ github.run_number }}" --title "render ${{ github.run_number }}" --notes "frames=${{ inputs.frames }} samples=${{ inputs.samples }} res=${{ inputs.res }}" --repo "${{ github.repository }}"
+        env: { GH_TOKEN: "${{ github.token }}" }
+  chunk:
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: bl
+        uses: actions/cache@v4
+        with:
+          path: blender
+          key: blender-5.0.1-linux-x64
+      - name: Download Blender
+        if: steps.bl.outputs.cache-hit != 'true'
+        run: |
+          curl -sL -o blender.tar.xz "https://download.blender.org/release/Blender5.0/blender-5.0.1-linux-x64.tar.xz"
+          tar -xf blender.tar.xz && mv blender-5.0.1-linux-x64 blender && rm blender.tar.xz
+      - name: Render
+        env:
+          PARAMS: ${{ inputs.params }}
+        run: |
+          nproc; free -g | head -2
+          blender/blender --background --factory-startup --python chase/render.py -- --frames "${{ matrix.frames }}" --out out --samples "${{ inputs.samples }}" --res "${{ inputs.res }}" --params "$PARAMS" > render.log 2>&1 || { tail -60 render.log; exit 1; }
+          grep -E "^(BUILD|FRAME|TOTAL|proto|street|buildings|vehicles|WARNING|   lamp)|Error|Traceback|cycles\.|coat|interp" render.log | head -150
+          ls out | head
+      - name: Upload
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          cp render.log out/log_${{ matrix.idx }}.txt
+          tar -cf exr-${{ matrix.idx }}.tar -C out .
+          ls -la exr-${{ matrix.idx }}.tar
+          gh release upload "${{ needs.prep.outputs.tag }}" exr-${{ matrix.idx }}.tar --clobber --repo "${{ github.repository }}"
+  join:
+    needs: [prep, chunk]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk ffmpeg
+      - run: pip install -q numpy opencv-python-headless pillow
+      - name: Collect and grade
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GRADE: ${{ inputs.grade }}
+        run: |
+          mkdir -p dl exr png
+          gh release download "${{ needs.prep.outputs.tag }}" -p "exr-*.tar" -D dl --repo "${{ github.repository }}"
+          for f in dl/*.tar; do tar -xf "$f" -C exr; done
+          ls exr/*.exr | wc -l
+          python3 tools/post.py exr png --params "$GRADE" --sheet sheet.jpg
+          python3 - <<'PY'
+          import json, glob
+          fr = []
+          for p in sorted(glob.glob('exr/timing_*.json')):
+              d = json.load(open(p)); fr += d['frames']; print(p, 'build', d['build_s'])
+          rs = [f['render_s'] for f in fr]
+          if rs:
+              print('frames', len(rs), 'render s/frame: mean %.1f min %.1f max %.1f total %.0f' % (sum(rs) / len(rs), min(rs), max(rs), sum(rs)))
+              by = {}
+              for f in fr: by.setdefault(f['shot'], []).append(f['render_s'])
+              print('per shot mean:', {k: round(sum(v) / len(v), 1) for k, v in sorted(by.items())})
+          json.dump(fr, open('timing.json', 'w'))
+          PY
+      - name: Video
+        if: ${{ inputs.video == '1' }}
+        run: |
+          ls png/*.png | wc -l
+          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i assets/audio_acid_v5.wav -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -shortest -movflags +faststart chase_hq.mp4
+          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i assets/audio_acid_v5.wav -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 20 -maxrate 6M -bufsize 12M -pix_fmt yuv420p -c:a aac -b:a 192k -ar 48000 -shortest -movflags +faststart chase_phone.mp4
+          for f in chase_hq.mp4 chase_phone.mp4; do ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames,width,height -show_entries format=duration,size -of default=nw=1 $f; done
+      - name: Upload
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          if [ "${{ inputs.video }}" = "1" ]; then
+            gh release upload "${{ needs.prep.outputs.tag }}" chase_hq.mp4 chase_phone.mp4 sheet.jpg timing.json --clobber --repo "${{ github.repository }}"
+          else
+            zip -q -j png.zip png/*.png
+            gh release upload "${{ needs.prep.outputs.tag }}" png.zip sheet.jpg timing.json --clobber --repo "${{ github.repository }}"
+          fi
