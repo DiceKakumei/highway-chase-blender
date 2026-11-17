@@ -42,6 +42,16 @@ P = {
     'clamp_indirect': 8.0,
     'adaptive': 0.03,
     'ground_z': -12.0,
+    # 道路・ビルの質感(2026-11-18 v2)
+    'asph_albedo': 0.55,     # 路面の明るさ(広域写真の平均0.14に掛ける)
+    'asph_rough': 0.92,
+    'asph_bump': 1.3,
+    'patch_prob': 0.22,      # 補修跡が出る割合
+    'paint_wear': 0.36,      # 白線のかすれ(大きいほど多い)
+    'fac_emit': 4.0,         # 窓あかり
+    'glass_wobble': 0.03,    # ガラス1枚ごとの傾き
+    'obs_emit': 60.0,        # 航空障害灯
+    'reflect_emit': 4.0,     # ガードレールの反射板
 }
 
 Y0, Y1 = -300.0, 2700.0          # road extent (three.js Z0=300 .. Z1=-2700)
@@ -244,28 +254,184 @@ def build_world():
     nt.links.new(env.outputs['Color'], bg.inputs['Color']); nt.links.new(bg.outputs[0], out.inputs['Surface'])
 
 
+def img_node(nt, fn, vec=None, noncolor=False, box=False):
+    t = nt.nodes.new('ShaderNodeTexImage')
+    t.image = bpy.data.images.load(os.path.join(ROOT, 'assets', 'tex', fn), check_existing=True)
+    if noncolor:
+        t.image.colorspace_settings.name = 'Non-Color'
+    if box:
+        t.projection = 'BOX'; t.projection_blend = 0.25
+    if vec is not None:
+        nt.links.new(vec, t.inputs['Vector'])
+    return t
+
+
+def mapping(nt, vec, scale=(1.0, 1.0, 1.0), rot=(0.0, 0.0, 0.0), loc=(0.0, 0.0, 0.0)):
+    mp = nt.nodes.new('ShaderNodeMapping')
+    mp.inputs['Scale'].default_value = scale; mp.inputs['Rotation'].default_value = rot; mp.inputs['Location'].default_value = loc
+    nt.links.new(vec, mp.inputs['Vector'])
+    return mp.outputs['Vector']
+
+
+def smooth(nt, v, a, b):
+    """smoothstep(a, b, v)。a > b なら逆向き(1 → 0)。"""
+    n = nt.nodes.new('ShaderNodeMapRange'); n.interpolation_type = 'SMOOTHSTEP'
+    n.inputs['From Min'].default_value = a; n.inputs['From Max'].default_value = b
+    n.inputs['To Min'].default_value = 0.0; n.inputs['To Max'].default_value = 1.0
+    nt.links.new(v, n.inputs['Value'])
+    return n.outputs['Result']
+
+
+def lerp(nt, a, b, f):
+    """a + (b - a) * f (数値かソケット)"""
+    return math_node(nt, 'ADD', a, math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', b, a), f))
+
+
+def noise(nt, vec, scale, detail=2.0, rough=0.5):
+    n = nt.nodes.new('ShaderNodeTexNoise')
+    n.inputs['Scale'].default_value = scale; n.inputs['Detail'].default_value = detail; n.inputs['Roughness'].default_value = rough
+    nt.links.new(vec, n.inputs['Vector'])
+    return n.outputs[0]
+
+
+def hash2(nt, a, b_):
+    """2つの値から乱数。(値, SeparateColor ノード)"""
+    comb = nt.nodes.new('ShaderNodeCombineXYZ')
+    for i, v in enumerate((a, b_)):
+        if isinstance(v, (int, float)):
+            comb.inputs[i].default_value = v
+        else:
+            nt.links.new(v, comb.inputs[i])
+    wn = nt.nodes.new('ShaderNodeTexWhiteNoise'); wn.noise_dimensions = '2D'; nt.links.new(comb.outputs[0], wn.inputs['Vector'])
+    sc = nt.nodes.new('ShaderNodeSeparateColor'); nt.links.new(wn.outputs['Color'], sc.inputs[0])
+    return wn.outputs['Value'], sc
+
+
+def luminance(nt, col):
+    n = nt.nodes.new('ShaderNodeRGBToBW'); nt.links.new(col, n.inputs[0])
+    return n.outputs[0]
+
+
 def asphalt_material():
+    """路面。細かい粒(2 m)× 広域の写真(約34 m、ひび・しみ)に、轍・油じみ・補修跡・伸縮継手・路肩の砂ぼこり・かすれた白線を重ねる。"""
     mat, nt, out = new_material('Asphalt')
     b = principled(nt, out)
-    tc = nt.nodes.new('ShaderNodeTexCoord'); mp = nt.nodes.new('ShaderNodeMapping')
-    mp.inputs['Scale'].default_value = (0.5, 0.5, 0.5)
-    nt.links.new(tc.outputs['Object'], mp.inputs['Vector'])
+    tc = nt.nodes.new('ShaderNodeTexCoord'); pos = tc.outputs['Object']
+    sp = nt.nodes.new('ShaderNodeSeparateXYZ'); nt.links.new(pos, sp.inputs[0]); x, y = sp.outputs['X'], sp.outputs['Y']
+    ROT = 0.31
+    m1 = mapping(nt, pos, scale=(0.5, 0.5, 0.5))
+    m2 = mapping(nt, pos, scale=(1 / 34.0, 1 / 34.0, 1.0), rot=(0, 0, ROT), loc=(0.37, 0.11, 0))
+    d1 = img_node(nt, 'asphalt_diff.jpg', m1); r1 = img_node(nt, 'asphalt_rough.jpg', m1, True); n1 = img_node(nt, 'asphalt_nor.jpg', m1, True)
+    d2 = img_node(nt, 'aerial_diff.jpg', m2); r2 = img_node(nt, 'aerial_rough.jpg', m2, True); n2 = img_node(nt, 'aerial_nor.jpg', m2, True)
 
-    def tex(fn, noncolor):
-        t = nt.nodes.new('ShaderNodeTexImage'); t.image = bpy.data.images.load(os.path.join(ROOT, 'assets', 'tex', fn))
-        if noncolor:
-            t.image.colorspace_settings.name = 'Non-Color'
-        nt.links.new(mp.outputs['Vector'], t.inputs['Vector'])
-        return t
-    d = tex('asphalt_diff.jpg', False); r = tex('asphalt_rough.jpg', True); n = tex('asphalt_nor.jpg', True)
-    # large-scale variation so that the 2 m tile does not read as a pattern (tyre-polished lanes are a little darker and smoother)
-    noise = nt.nodes.new('ShaderNodeTexNoise'); noise.inputs['Scale'].default_value = 0.07; noise.inputs['Detail'].default_value = 3.0
-    nt.links.new(tc.outputs['Object'], noise.inputs['Vector'])
-    var = math_node(nt, 'ADD', math_node(nt, 'MULTIPLY', noise.outputs[0], 0.5), 0.75)
-    nt.links.new(vmath(nt, 'SCALE', d.outputs['Color'], scale=var), b.inputs['Base Color'])
-    nt.links.new(math_node(nt, 'MULTIPLY', r.outputs['Color'], 0.85), b.inputs['Roughness'])
-    nm = nt.nodes.new('ShaderNodeNormalMap'); nm.inputs['Strength'].default_value = 1.0
-    nt.links.new(n.outputs['Color'], nm.inputs['Color']); nt.links.new(nm.outputs['Normal'], b.inputs['Normal'])
+    # lanes: main carriageway 3.6 m lanes (x = -7.2 .. 7.2), opposite carriageway 4 m lanes
+    far = math_node(nt, 'LESS_THAN', x, -11.0)
+    lane = lerp(nt, math_node(nt, 'DIVIDE', math_node(nt, 'ADD', x, 7.2), 3.6), math_node(nt, 'DIVIDE', math_node(nt, 'ADD', x, 20.5), 4.0), far)
+    lf = math_node(nt, 'FRACT', lane); il = math_node(nt, 'FLOOR', lane); lw = lerp(nt, 3.6, 4.0, far)
+
+    def band(center, w0, w1):
+        d = math_node(nt, 'MULTIPLY', math_node(nt, 'ABSOLUTE', math_node(nt, 'SUBTRACT', lf, center)), lw)
+        return smooth(nt, d, w0, w1)
+    ny = noise(nt, mapping(nt, pos, scale=(0.5, 0.02, 1.0)), 1.0, 2.0)
+    wp = math_node(nt, 'MULTIPLY', math_node(nt, 'MAXIMUM', band(0.264, 0.50, 0.12), band(0.736, 0.50, 0.12)),
+                   math_node(nt, 'ADD', 0.45, math_node(nt, 'MULTIPLY', ny, 1.0)), clamp=True)          # 轍(タイヤで磨かれた帯)
+    oil = band(0.5, 0.36, 0.05)                                                                          # 車線中央の油じみ
+    macro = math_node(nt, 'ADD', 0.84, math_node(nt, 'MULTIPLY', noise(nt, pos, 0.045, 3.0), 0.32))
+
+    # 補修跡: 車線 × 60 m のマスごとに、ある確率で四角く舗装し直した跡。ふちは黒いシール材
+    cy = math_node(nt, 'DIVIDE', y, 60.0); iy = math_node(nt, 'FLOOR', cy); fy = math_node(nt, 'FRACT', cy)
+    hv, hc = hash2(nt, il, iy)
+    pc = math_node(nt, 'ADD', 0.3, math_node(nt, 'MULTIPLY', hc.outputs[0], 0.4))
+    hl = math_node(nt, 'ADD', 0.07, math_node(nt, 'MULTIPLY', hc.outputs[1], 0.2))
+    iny = math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', hl, math_node(nt, 'ABSOLUTE', math_node(nt, 'SUBTRACT', fy, pc))), 60.0)
+    inx = math_node(nt, 'SUBTRACT', math_node(nt, 'MULTIPLY', math_node(nt, 'MINIMUM', lf, math_node(nt, 'SUBTRACT', 1.0, lf)), lw), 0.16)
+    dd = math_node(nt, 'MINIMUM', iny, inx)
+    exist = math_node(nt, 'LESS_THAN', hv, P['patch_prob'])
+    patch = math_node(nt, 'MULTIPLY', exist, math_node(nt, 'GREATER_THAN', dd, 0.0))
+    seal = math_node(nt, 'MULTIPLY', exist, math_node(nt, 'LESS_THAN', math_node(nt, 'ABSOLUTE', dd), 0.035))
+
+    # 伸縮継手: 30 m ごとに鋼の帯(幅0.28 m)と、その前後のコンクリート(各0.45 m)
+    j = math_node(nt, 'FRACT', math_node(nt, 'DIVIDE', y, 30.0))
+    dj = math_node(nt, 'MULTIPLY', math_node(nt, 'MINIMUM', j, math_node(nt, 'SUBTRACT', 1.0, j)), 30.0)
+    steel = math_node(nt, 'LESS_THAN', dj, 0.14)
+    header = math_node(nt, 'MULTIPLY', math_node(nt, 'LESS_THAN', dj, 0.59), math_node(nt, 'SUBTRACT', 1.0, steel))
+
+    # 路肩・中央帯の砂ぼこり
+    da = math_node(nt, 'ABSOLUTE', math_node(nt, 'ADD', x, 0.4)); db = math_node(nt, 'ABSOLUTE', math_node(nt, 'ADD', x, 17.5))
+    dust = lerp(nt, smooth(nt, da, 7.85, 8.9), smooth(nt, db, 3.85, 4.7), far)
+
+    # 白線(元の位置・長さのまま)。かすれ = 大きなむら + 細かい欠け
+    ax = math_node(nt, 'ABSOLUTE', x)
+    dsol = math_node(nt, 'MINIMUM', math_node(nt, 'ABSOLUTE', math_node(nt, 'SUBTRACT', ax, 7.6)),
+                     math_node(nt, 'MINIMUM', math_node(nt, 'ABSOLUTE', math_node(nt, 'ADD', x, 21.1)), math_node(nt, 'ABSOLUTE', math_node(nt, 'ADD', x, 11.9))))
+    solid = smooth(nt, dsol, 0.112, 0.088)
+    dmain = math_node(nt, 'MULTIPLY', math_node(nt, 'ABSOLUTE', math_node(nt, 'SUBTRACT', math_node(nt, 'FRACT', math_node(nt, 'ADD', math_node(nt, 'DIVIDE', x, 3.6), 0.5)), 0.5)), 3.6)
+    dmain = math_node(nt, 'ADD', dmain, math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', ax, 5.0), 10.0))
+    ddash = math_node(nt, 'MINIMUM', dmain, math_node(nt, 'ABSOLUTE', math_node(nt, 'ADD', x, 16.5)))
+    dash = math_node(nt, 'LESS_THAN', math_node(nt, 'FRACT', math_node(nt, 'DIVIDE', math_node(nt, 'ADD', y, 301.8), 9.0)), 0.4)
+    paint = math_node(nt, 'MULTIPLY', math_node(nt, 'MAXIMUM', solid, math_node(nt, 'MULTIPLY', smooth(nt, ddash, 0.102, 0.078), dash)), math_node(nt, 'SUBTRACT', 1.0, steel))
+    wear = smooth(nt, noise(nt, pos, 1.1, 5.0, 0.65), P['paint_wear'] - 0.06, P['paint_wear'] + 0.06)
+    speck = smooth(nt, noise(nt, pos, 38.0, 2.0), 0.40, 0.56)
+    pa = math_node(nt, 'MULTIPLY', paint, lerp(nt, math_node(nt, 'MULTIPLY', speck, 0.55), math_node(nt, 'ADD', 0.80, math_node(nt, 'MULTIPLY', speck, 0.20)), wear))
+
+    # colour
+    fine = vmath(nt, 'SCALE', d1.outputs['Color'], scale=1.0 / 0.015)
+    k = math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', macro, P['asph_albedo']),
+                  math_node(nt, 'SUBTRACT', math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', wp, 0.24)), math_node(nt, 'MULTIPLY', oil, 0.10)))
+    col = vmath(nt, 'SCALE', vmath(nt, 'MULTIPLY', d2.outputs['Color'], fine), scale=k)
+    col = vlerp(nt, col, vmath(nt, 'SCALE', col, scale=0.58), patch)
+    col = vlerp(nt, col, (0.150, 0.138, 0.118), math_node(nt, 'MULTIPLY', dust, 0.55))
+    col = vlerp(nt, col, (0.010, 0.010, 0.011), seal)
+    col = vlerp(nt, col, vmath(nt, 'SCALE', (0.20, 0.195, 0.18), scale=macro), header)
+    col = vlerp(nt, col, (0.09, 0.09, 0.10), steel)
+    dirt = math_node(nt, 'ADD', 0.72, math_node(nt, 'MULTIPLY', noise(nt, pos, 0.6, 3.0), 0.36))
+    col = vlerp(nt, col, vmath(nt, 'SCALE', (0.66, 0.66, 0.63), scale=dirt), pa)
+    nt.links.new(col, b.inputs['Base Color'])
+
+    # roughness
+    rg = math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', r1.outputs['Color'], r2.outputs['Color']), P['asph_rough'] / 0.78)
+    rg = math_node(nt, 'MULTIPLY', rg, math_node(nt, 'SUBTRACT', math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', wp, 0.28)), math_node(nt, 'MULTIPLY', oil, 0.10)))
+    rg = lerp(nt, rg, 0.92, math_node(nt, 'MULTIPLY', dust, 0.6))
+    rg = lerp(nt, rg, 0.26, seal)
+    rg = lerp(nt, rg, 0.80, header)
+    rg = lerp(nt, rg, 0.36, steel)
+    rg = lerp(nt, rg, 0.52, pa)
+    nt.links.new(rg, b.inputs['Roughness'])
+    nt.links.new(steel, b.inputs['Metallic'])
+
+    # normal: 路面は水平なので、法線マップをそのままワールドの向きに直す(UVが要らない)
+    def nvec(tex, s, rot=0.0):
+        v = vmath(nt, 'MULTIPLY', vmath(nt, 'SUBTRACT', tex.outputs['Color'], (0.5, 0.5, 0.5)), (2 * s, 2 * s, 0.0))
+        if rot:
+            vr = nt.nodes.new('ShaderNodeVectorRotate'); vr.rotation_type = 'Z_AXIS'; vr.inputs['Angle'].default_value = -rot
+            nt.links.new(v, vr.inputs['Vector']); v = vr.outputs[0]
+        return v
+    flat = math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', math_node(nt, 'MAXIMUM', pa, steel), 0.7))
+    nsum = vmath(nt, 'SCALE', vmath(nt, 'ADD', nvec(n1, P['asph_bump']), nvec(n2, 1.0, ROT)), scale=flat)
+    nrm = vmath(nt, 'NORMALIZE', vmath(nt, 'ADD', nsum, (0.0, 0.0, 1.0)))
+    nt.links.new(nrm, b.inputs['Normal'])
+    add_fog(mat)
+    return mat
+
+
+def concrete_material():
+    """壁高欄・中央分離帯: 型枠コンクリート + 雨だれ + 目地 + 足元の汚れ。"""
+    mat, nt, out = new_material('Concrete')
+    b = principled(nt, out)
+    tc = nt.nodes.new('ShaderNodeTexCoord'); pos = tc.outputs['Object']
+    sp = nt.nodes.new('ShaderNodeSeparateXYZ'); nt.links.new(pos, sp.inputs[0]); y, z = sp.outputs['Y'], sp.outputs['Z']
+    v = mapping(nt, pos, scale=(1 / 2.71,) * 3)
+    d = img_node(nt, 'concrete_diff.jpg', v, box=True); r = img_node(nt, 'concrete_rough.jpg', v, True, box=True)
+    streak = smooth(nt, noise(nt, mapping(nt, pos, scale=(1.2, 1.2, 0.045)), 1.0, 4.0, 0.6), 0.40, 0.72)
+    top = smooth(nt, z, -0.6, 1.0)
+    grime = math_node(nt, 'MULTIPLY', smooth(nt, z, 0.45, 0.0), smooth(nt, z, -0.25, 0.0))
+    joint = math_node(nt, 'LESS_THAN', math_node(nt, 'FRACT', math_node(nt, 'DIVIDE', y, 8.0)), 0.004)
+    k = math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', streak, top), 0.5)),
+                  math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', grime, 0.45)), math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', joint, 0.75))))
+    nt.links.new(vmath(nt, 'SCALE', d.outputs['Color'], scale=math_node(nt, 'MULTIPLY', k, 0.62)), b.inputs['Base Color'])
+    nt.links.new(math_node(nt, 'ADD', r.outputs['Color'], math_node(nt, 'MULTIPLY', streak, 0.1), clamp=True), b.inputs['Roughness'])
+    bump = nt.nodes.new('ShaderNodeBump'); bump.inputs['Strength'].default_value = 0.35; bump.inputs['Distance'].default_value = 0.02
+    nt.links.new(luminance(nt, d.outputs['Color']), bump.inputs['Height']); nt.links.new(bump.outputs[0], b.inputs['Normal'])
     add_fog(mat)
     return mat
 
@@ -274,18 +440,7 @@ def build_road():
     asphalt = asphalt_material()
     g = Geo(); g.hquad(-22.4, 9.6, Y0 - 20, Y1 + 20, 0.0); g.obj('Deck', asphalt)
 
-    paint = simple_material('Paint', (0.78, 0.78, 0.76), rough=0.55)
-    g = Geo()
-    for lx in (-3.6, 0.0, 3.6, -16.5):
-        y = -300.0
-        while y < 2700:
-            g.hquad(lx - 0.09, lx + 0.09, y - 1.8, y + 1.8, 0.006)
-            y += 9.0
-    for ex in (-7.6, 7.6, -21.1, -11.9):
-        g.hquad(ex - 0.1, ex + 0.1, Y0, Y1, 0.006)
-    g.obj('LaneMarks', paint)
-
-    concrete = simple_material('Concrete', (0.42, 0.42, 0.41), rough=0.85)
+    concrete = concrete_material()
     g = Geo()
     g.box(9.35, YC, -0.5, 0.3, LEN + 40, 3.0)            # right parapet (top at z = 1.0)
     g.box(-22.25, YC, -0.5, 0.3, LEN + 40, 3.0)          # far parapet
@@ -303,6 +458,19 @@ def build_road():
             g.box(rx + sgn * 0.11, y, 0.39, 0.10, 0.12, 0.78)
             y += 4.0
     g.obj('GuardRails', steel)
+
+    # 中央分離帯の上の遮光板(対向車のライトよけ)と、ガードレールの反射板
+    g = Geo(); y = Y0
+    while y < Y1:
+        g.box(-12.7, y, 1.36, 0.34, 0.035, 0.72)
+        y += 1.5
+    g.obj('GlareSlats', simple_material('GlareSlat', (0.035, 0.085, 0.06), rough=0.5))
+    gw = Geo(); gy = Geo(); y = Y0 + 2.0
+    while y < Y1:
+        gw.box(8.52, y, 0.93, 0.10, 0.02, 0.10); gy.box(-9.32, y, 0.93, 0.10, 0.02, 0.10)
+        y += 24.0
+    gw.obj('ReflectW', emission_material('ReflectW', (1.0, 0.95, 0.85), P['reflect_emit']))
+    gy.obj('ReflectY', emission_material('ReflectY', (1.0, 0.55, 0.10), P['reflect_emit']))
 
     # street lamps: right side + median (double arm), every 45 m
     pole = simple_material('Pole', (0.30, 0.31, 0.33), rough=0.5, metallic=0.9)
@@ -325,75 +493,227 @@ def build_road():
     print('street lamps:', len(spots))
 
 
-def facade_material():
-    """ビルの外壁: 1.8 m ごとの窓、5.4 m ごとの部屋単位で点灯。棟ごとに点灯率を変える。"""
-    mat, nt, out = new_material('Facade')
-    b = principled(nt, out)
-    uv = nt.nodes.new('ShaderNodeTexCoord')
-    sep = nt.nodes.new('ShaderNodeSeparateXYZ'); nt.links.new(uv.outputs['UV'], sep.inputs[0])
-    u, v = sep.outputs['X'], sep.outputs['Y']
+# 外壁の写真素材(ambientCG, CC0)。tile = 1枚の実寸(m)、grid = 1枚の中の窓の列数・階数
+FACADES = {
+    'f018': dict(tile=20.4, grid=(6, 6), emi=True, metal=True, night=False, gain=1.0),     # れんが + 窓
+    'f019': dict(tile=20.4, grid=(6, 6), emi=True, metal=True, night=False, gain=1.0),     # 灰色のコンクリート格子
+    'f020': dict(tile=20.4, grid=(6, 6), emi=True, metal=True, night=False, gain=1.0),     # 茶色のれんが
+    'f017': dict(tile=43.0, grid=(12, 12), emi=True, metal=False, night=False, gain=1.2),  # 縦リブのオフィス
+    'f013': dict(tile=112.0, grid=(32, 32), emi=True, metal=False, night=False, gain=1.4), # 格子の高層
+    'f009': dict(tile=60.0, grid=(4, 16), emi=True, metal=False, night=True, gain=1.6),    # 暗いガラスのオフィス(夜の写真)
+    'f007': dict(tile=160.0, grid=(10, 44), emi=True, metal=False, night=True, gain=2.0),  # 暗いガラスの超高層(夜の写真)
+    'f006': dict(tile=28.0, grid=(14, 8), emi=False, metal=True, night=False, gain=1.0),   # ガラス + 白い帯
+    'f001': dict(tile=36.0, grid=(16, 10), emi=False, metal=True, night=False, gain=1.0),  # 全面ガラス
+}
 
-    def noise2(a, b_):
-        comb = nt.nodes.new('ShaderNodeCombineXYZ'); nt.links.new(a, comb.inputs[0])
-        if isinstance(b_, (int, float)):
-            comb.inputs[1].default_value = b_
+
+def bld_attrs(nt):
+    """棟ごとの乱数(メッシュの色属性 bld / bld2)。(明るさ, 点灯率, 色味), (種)"""
+    a = nt.nodes.new('ShaderNodeAttribute'); a.attribute_name = 'bld'
+    sa = nt.nodes.new('ShaderNodeSeparateColor'); nt.links.new(a.outputs['Color'], sa.inputs[0])
+    b2 = nt.nodes.new('ShaderNodeAttribute'); b2.attribute_name = 'bld2'
+    sb = nt.nodes.new('ShaderNodeSeparateColor'); nt.links.new(b2.outputs['Color'], sb.inputs[0])
+    return sa.outputs[0], sa.outputs[1], sa.outputs[2], sb.outputs[0]
+
+
+def facade_material(key):
+    c = FACADES[key]
+    mat, nt, out = new_material('Facade_' + key)
+    b = principled(nt, out)
+    tc = nt.nodes.new('ShaderNodeTexCoord')
+    t = mapping(nt, tc.outputs['UV'], scale=(1 / c['tile'], 1 / c['tile'], 1.0))
+    col = img_node(nt, 'facade/%s_col.jpg' % key, t); rough = img_node(nt, 'facade/%s_rough.jpg' % key, t, True); nor = img_node(nt, 'facade/%s_nor.jpg' % key, t, True)
+    br, litf, warm, seed = bld_attrs(nt)
+    sp = nt.nodes.new('ShaderNodeSeparateXYZ'); nt.links.new(t, sp.inputs[0])
+    gx, gy = c['grid']
+    px = math_node(nt, 'MULTIPLY', sp.outputs['X'], float(gx)); py = math_node(nt, 'MULTIPLY', sp.outputs['Y'], float(gy))
+    hv, hc = hash2(nt, math_node(nt, 'ADD', math_node(nt, 'FLOOR', px), math_node(nt, 'MULTIPLY', seed, 977.0)),
+                   math_node(nt, 'ADD', math_node(nt, 'FLOOR', py), math_node(nt, 'MULTIPLY', seed, 613.0)))
+    tint = math_node(nt, 'ADD', 0.62, math_node(nt, 'MULTIPLY', br, 0.5))
+    base = vmath(nt, 'SCALE', col.outputs['Color'], scale=tint)
+    fac = P['fac_emit'] * c['gain']
+
+    if c['metal']:
+        metal = img_node(nt, 'facade/%s_metal.jpg' % key, t, True).outputs['Color']
+    elif c['night']:
+        metal = None
+    else:
+        metal = math_node(nt, 'MULTIPLY', math_node(nt, 'LESS_THAN', rough.outputs['Color'], 0.12), 0.9)   # 粗さ0 = ガラス
+
+    if c['emi']:
+        emi = img_node(nt, 'facade/%s_emi.jpg' % key, t)
+        el = luminance(nt, emi.outputs['Color'])
+        if c['night']:
+            on = math_node(nt, 'ADD', 0.25, math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', hv, math_node(nt, 'SUBTRACT', 0.85, math_node(nt, 'MULTIPLY', litf, 0.8))), 1.0))
+            base = vmath(nt, 'MAXIMUM', vmath(nt, 'SCALE', base, scale=0.5), (0.085, 0.10, 0.125))
+            metal = math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', 1.0, el, clamp=True), 0.9)
         else:
-            nt.links.new(b_, comb.inputs[1])
-        wn = nt.nodes.new('ShaderNodeTexWhiteNoise'); wn.noise_dimensions = '2D'; nt.links.new(comb.outputs[0], wn.inputs['Vector'])
-        sc = nt.nodes.new('ShaderNodeSeparateColor'); nt.links.new(wn.outputs['Color'], sc.inputs[0])
-        return wn.outputs['Value'], sc
-    cv = math_node(nt, 'DIVIDE', v, 3.3); iv = math_node(nt, 'FLOOR', cv); fv = math_node(nt, 'FRACT', cv)
-    cu = math_node(nt, 'DIVIDE', u, 1.8); iu = math_node(nt, 'FLOOR', cu); fu = math_node(nt, 'FRACT', cu)
-    room_u = math_node(nt, 'FLOOR', math_node(nt, 'DIVIDE', u, 5.4))
-    bid = math_node(nt, 'FLOOR', math_node(nt, 'DIVIDE', u, 1000.0))
-    r_room, sc_room = noise2(room_u, iv)
-    r_win, _ = noise2(iu, math_node(nt, 'ADD', iv, 500.0))
-    r_bld, _ = noise2(bid, 7.0)
-    win = math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', fu, 0.10), math_node(nt, 'LESS_THAN', fu, 0.90)),
-                    math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', fv, 0.30), math_node(nt, 'LESS_THAN', fv, 0.80)))
-    thr = math_node(nt, 'ADD', 0.52, math_node(nt, 'MULTIPLY', r_bld, 0.44))
-    lit = math_node(nt, 'MULTIPLY', math_node(nt, 'GREATER_THAN', r_room, thr), math_node(nt, 'GREATER_THAN', r_win, 0.22))
-    e = math_node(nt, 'MULTIPLY', win, lit)
-    col = vlerp(nt, (1.0, 0.70, 0.40), (0.75, 0.86, 1.0), math_node(nt, 'GREATER_THAN', sc_room.outputs[1], 0.70))
-    bright = math_node(nt, 'ADD', math_node(nt, 'POWER', sc_room.outputs[2], 2.0), 0.12)
-    strength = math_node(nt, 'MULTIPLY', e, math_node(nt, 'MULTIPLY', bright, P['win_emit']))
-    nt.links.new(col, b.inputs['Emission Color']); nt.links.new(strength, b.inputs['Emission Strength'])
-    wall = vlerp(nt, (0.055, 0.055, 0.06), (0.12, 0.115, 0.11), r_bld)
-    nt.links.new(vlerp(nt, wall, (0.012, 0.014, 0.02), win), b.inputs['Base Color'])
-    nt.links.new(math_node(nt, 'SUBTRACT', 0.75, math_node(nt, 'MULTIPLY', win, 0.65)), b.inputs['Roughness'])
+            on = math_node(nt, 'GREATER_THAN', hv, math_node(nt, 'SUBTRACT', 0.92, math_node(nt, 'MULTIPLY', litf, 0.8)))
+            dark = math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', el, math_node(nt, 'SUBTRACT', 1.0, on)), 0.88, clamp=True))
+            base = vmath(nt, 'SCALE', base, scale=dark)                 # 消灯した窓は、暗いガラスにする
+        e = vmath(nt, 'SCALE', emi.outputs['Color'], scale=math_node(nt, 'MULTIPLY', on, math_node(nt, 'ADD', 0.55, math_node(nt, 'MULTIPLY', hc.outputs[2], 0.9))))
+    else:
+        # 発光マップがない素材: ガラス(金属マップ)のマスごとに点灯。上ほど明るく(天井灯)、暖色/寒色を混ぜる
+        on = math_node(nt, 'GREATER_THAN', hv, math_node(nt, 'SUBTRACT', 0.97, math_node(nt, 'MULTIPLY', litf, 0.55)))
+        gradv = math_node(nt, 'ADD', 0.45, math_node(nt, 'MULTIPLY', math_node(nt, 'FRACT', py), 0.8))
+        inter = math_node(nt, 'ADD', 0.55, math_node(nt, 'MULTIPLY', noise(nt, t, c['tile'] * 1.7, 2.0), 0.9))
+        lc = vlerp(nt, (1.0, 0.72, 0.42), (0.78, 0.88, 1.0), math_node(nt, 'GREATER_THAN', hc.outputs[1], 0.55))
+        e = vmath(nt, 'SCALE', lc, scale=math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', on, metal), math_node(nt, 'MULTIPLY', math_node(nt, 'MULTIPLY', gradv, inter), 0.5)))
+
+    # ガラスは空を映す(金属扱い)。映り込みの色 = ガラスの色。暗すぎるガラスは少し持ち上げる
+    base = vlerp(nt, base, vmath(nt, 'MAXIMUM', base, (0.075, 0.09, 0.115)), metal)
+    nt.links.new(base, b.inputs['Base Color'])
+    nt.links.new(metal, b.inputs['Metallic'])
+    nt.links.new(math_node(nt, 'MAXIMUM', rough.outputs['Color'], 0.045), b.inputs['Roughness'])
+    nt.links.new(e, b.inputs['Emission Color']); b.inputs['Emission Strength'].default_value = fac
+    # 法線: 素材の法線 + ガラス1枚ごとのわずかな傾き(映り込みがそろわない)
+    comb = nt.nodes.new('ShaderNodeCombineXYZ')
+    nt.links.new(math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', hc.outputs[0], 0.5), P['glass_wobble']), comb.inputs[0])
+    nt.links.new(math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', hc.outputs[1], 0.5), P['glass_wobble']), comb.inputs[1])
+    nm = nt.nodes.new('ShaderNodeNormalMap'); nm.inputs['Strength'].default_value = 1.0
+    nt.links.new(vmath(nt, 'ADD', nor.outputs['Color'], vmath(nt, 'SCALE', comb.outputs[0], scale=metal)), nm.inputs['Color'])
+    nt.links.new(nm.outputs['Normal'], b.inputs['Normal'])
     add_fog(mat)
     return mat
 
 
-def build_city():
-    gz = P['ground_z']
-    facade = facade_material(); roof = simple_material('Roof', (0.05, 0.05, 0.055), rough=0.9)
-    V, F, UV, FM = [], [], [], []
+def plain_wall_material():
+    """窓のない壁(塔屋・立ち上がり・倉庫): 型枠コンクリート。棟ごとに明るさを変える。"""
+    mat, nt, out = new_material('PlainWall')
+    b = principled(nt, out)
+    tc = nt.nodes.new('ShaderNodeTexCoord')
+    t = mapping(nt, tc.outputs['UV'], scale=(1 / 2.71, 1 / 2.71, 1.0))
+    d = img_node(nt, 'concrete_diff.jpg', t); r = img_node(nt, 'concrete_rough.jpg', t, True)
+    br, litf, warm, seed = bld_attrs(nt)
+    sp = nt.nodes.new('ShaderNodeSeparateXYZ'); nt.links.new(tc.outputs['UV'], sp.inputs[0])
+    streak = smooth(nt, noise(nt, mapping(nt, tc.outputs['UV'], scale=(1.1, 0.05, 1.0)), 1.0, 4.0, 0.6), 0.42, 0.74)
+    k = math_node(nt, 'MULTIPLY', math_node(nt, 'ADD', 0.30, math_node(nt, 'MULTIPLY', br, 0.45)), math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', streak, 0.4)))
+    nt.links.new(vmath(nt, 'SCALE', d.outputs['Color'], scale=k), b.inputs['Base Color'])
+    nt.links.new(r.outputs['Color'], b.inputs['Roughness'])
+    add_fog(mat)
+    return mat
 
-    def building(i, bx, by, bw, bh, bd):
-        x0, x1, y0, y1, z0, z1 = bx - bw / 2, bx + bw / 2, by - bd / 2, by + bd / 2, gz, bh
+
+def roof_material():
+    mat, nt, out = new_material('Roof')
+    b = principled(nt, out)
+    tc = nt.nodes.new('ShaderNodeTexCoord'); pos = tc.outputs['Object']
+    v = mapping(nt, pos, scale=(1 / 2.5, 1 / 2.5, 1.0))
+    d = img_node(nt, 'roof_diff.jpg', v); r = img_node(nt, 'roof_rough.jpg', v, True)
+    k = math_node(nt, 'ADD', 0.45, math_node(nt, 'MULTIPLY', noise(nt, pos, 0.11, 3.0), 0.8))
+    nt.links.new(vmath(nt, 'SCALE', d.outputs['Color'], scale=k), b.inputs['Base Color'])
+    nt.links.new(math_node(nt, 'ADD', r.outputs['Color'], 0.2, clamp=True), b.inputs['Roughness'])
+    add_fog(mat)
+    return mat
+
+
+class City:
+    """ビルの箱を1つのメッシュにためる。壁 = 外壁素材(UVはメートル)、上面 = 屋上。"""
+    def __init__(self):
+        self.V = []; self.F = []; self.UV = []; self.FM = []; self.A = []; self.B = []
+
+    def box(self, x0, x1, y0, y1, z0, z1, wall, top, a, b2, u0=0.0, vbase=0.0):
+        V, F, UV, FM = self.V, self.F, self.UV, self.FM
         n = len(V)
         V.extend([(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0), (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)])
-        u = 1000.0 * i; h = z1 - z0
-        for (a, b_), wlen in (((0, 1), bw), ((1, 2), bd), ((2, 3), bw), ((3, 0), bd)):
-            F.append((n + a, n + b_, n + b_ + 4, n + a + 4)); FM.append(0)
-            UV.extend([(u, 0), (u + wlen, 0), (u + wlen, h), (u, h)]); u += wlen + 50
-        F.append((n + 4, n + 5, n + 6, n + 7)); FM.append(1); UV.extend([(0, 0)] * 4)
+        u = u0
+        for (i0, i1), wlen in (((0, 1), x1 - x0), ((1, 2), y1 - y0), ((2, 3), x1 - x0), ((3, 0), y1 - y0)):
+            F.append((n + i0, n + i1, n + i1 + 4, n + i0 + 4)); FM.append(wall)
+            UV.extend([(u, z0 - vbase), (u + wlen, z0 - vbase), (u + wlen, z1 - vbase), (u, z1 - vbase)]); u += wlen
+        F.append((n + 4, n + 5, n + 6, n + 7)); FM.append(top); UV.extend([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        self.A.extend([a] * 20); self.B.extend([b2] * 20)
+
+    def obj(self, name, mats):
+        o = mesh_object(name, self.V, self.F, mats=mats, uvs=self.UV, face_mat=self.FM)
+        for nm, data in (('bld', self.A), ('bld2', self.B)):
+            ca = o.data.color_attributes.new(nm, 'FLOAT_COLOR', 'CORNER')
+            ca.data.foreach_set('color', np.asarray(data, dtype=np.float32).ravel())
+        return o
+
+
+def build_city():
+    gz = P['ground_z']
+    keys = list(FACADES.keys())
+    mats = [facade_material(k) for k in keys]
+    MI = {k: i for i, k in enumerate(keys)}
+    PLAIN, ROOF, METAL, OBS = len(mats), len(mats) + 1, len(mats) + 2, len(mats) + 3
+    mats += [plain_wall_material(), roof_material(), simple_material('RoofMetal', (0.34, 0.35, 0.36), rough=0.5, metallic=0.85),
+             emission_material('ObsLight', (1.0, 0.06, 0.03), P['obs_emit'])]
+    C = City()
+    TALL = ['f013', 'f007', 'f009', 'f001', 'f006', 'f013', 'f007']
+    MID = ['f017', 'f009', 'f006', 'f019', 'f018', 'f001', 'f017']
+    LOW = ['f018', 'f019', 'f020', 'f017', 'f018', 'f020']
+
+    def roof_stuff(rr, x0, x1, y0, y1, zt, a, b2, near, total_h):
+        w, d = x1 - x0, y1 - y0
+        ph, pt = 1.0, 0.35                                     # 立ち上がり(パラペット)
+        for (px0, px1, py0, py1) in ((x0, x1, y0, y0 + pt), (x0, x1, y1 - pt, y1), (x0, x0 + pt, y0 + pt, y1 - pt), (x1 - pt, x1, y0 + pt, y1 - pt)):
+            C.box(px0, px1, py0, py1, zt, zt + ph, PLAIN, PLAIN, a, b2)
+        if rr() < 0.8 and w > 8 and d > 8:                     # 塔屋(エレベーター機械室)
+            pw, pd, phh = w * (0.25 + rr() * 0.25), d * (0.25 + rr() * 0.25), 3.0 + rr() * 3.0
+            cx = x0 + pt + pw / 2 + rr() * (w - 2 * pt - pw); cy = y0 + pt + pd / 2 + rr() * (d - 2 * pt - pd)
+            C.box(cx - pw / 2, cx + pw / 2, cy - pd / 2, cy + pd / 2, zt, zt + phh, PLAIN, ROOF, a, b2, u0=rr() * 20)
+        if near:                                               # 室外機の列
+            nu = 2 + int(rr() * 6); ux = x0 + 1.5 + rr() * max(0.5, w - 3 - nu * 2.2); uy = y0 + 1.5 + rr() * max(0.5, d - 4.0)
+            for k in range(nu):
+                if ux + k * 2.2 + 1.6 < x1 - 1.0:
+                    C.box(ux + k * 2.2, ux + k * 2.2 + 1.6, uy, uy + 1.0, zt, zt + 1.5, METAL, METAL, a, b2)
+        if total_h > 110 and rr() < 0.55:                      # アンテナ
+            mh = 10 + rr() * 16; mx = x0 + w * (0.3 + rr() * 0.4); my = y0 + d * (0.3 + rr() * 0.4)
+            C.box(mx - 0.2, mx + 0.2, my - 0.2, my + 0.2, zt, zt + mh, METAL, METAL, a, b2)
+            C.box(mx - 0.3, mx + 0.3, my - 0.3, my + 0.3, zt + mh, zt + mh + 0.6, OBS, OBS, a, b2)
+        if total_h >= 60:                                      # 航空障害灯(赤)
+            for (lx, ly) in ((x0 + 0.2, y0 + 0.2), (x1 - 0.2, y0 + 0.2), (x1 - 0.2, y1 - 0.2), (x0 + 0.2, y1 - 0.2)):
+                C.box(lx - 0.3, lx + 0.3, ly - 0.3, ly + 0.3, zt + ph, zt + ph + 0.6, OBS, OBS, a, b2)
+
+    def building(i, bx, by, bw, bh, bd, cls):
+        rr = M.rng(9100 + i)
+        H = bh - gz
+        if cls == 'low':
+            key = LOW[int(rr() * len(LOW))] if rr() < 0.85 else None
+        elif H > 105 or cls == 'far':
+            key = TALL[int(rr() * len(TALL))]
+        elif H > 55:
+            key = MID[int(rr() * len(MID))]
+        else:
+            key = LOW[int(rr() * len(LOW))]
+        wall = MI[key] if key else PLAIN
+        a = (rr(), 0.2 + 0.75 * rr(), rr(), 1.0); b2 = (rr(), rr(), rr(), 1.0)
+        u0 = rr() * 300.0
+        near = abs(bx) < 150 and cls != 'far'
+        x0, x1, y0, y1 = bx - bw / 2, bx + bw / 2, by - bd / 2, by + bd / 2
+        z0 = gz
+        if cls == 'main' and H > 80 and rr() < 0.45:           # 低層部(基壇)の上に塔
+            pz = 8.0 + rr() * 14.0; f = 0.58
+            pk = MI[MID[int(rr() * len(MID))]]
+            a2 = (rr(), 0.3 + 0.6 * rr(), rr(), 1.0)
+            C.box(bx - bw * f, bx + bw * f, by - bd * f, by + bd * f, gz, pz, pk, ROOF, a2, b2, u0=rr() * 300, vbase=gz)
+            z0 = pz
+        zt = bh
+        if cls != 'low' and H > 60 and rr() < 0.35:            # 頂部を一段しぼる
+            zc = z0 + (bh - z0) * (0.82 + rr() * 0.08); s = 0.62 + rr() * 0.16
+            C.box(x0, x1, y0, y1, z0, zc, wall, ROOF, a, b2, u0=u0, vbase=gz)
+            x0, x1, y0, y1 = bx - bw * s / 2, bx + bw * s / 2, by - bd * s / 2, by + bd * s / 2
+            C.box(x0, x1, y0, y1, zc, zt, wall, ROOF, a, b2, u0=u0 + 7.0, vbase=gz)
+        else:
+            C.box(x0, x1, y0, y1, z0, zt, wall, ROOF, a, b2, u0=u0, vbase=gz)
+        if cls != 'far' or H > 120:
+            roof_stuff(rr, x0, x1, y0, y1, zt, a, b2, near, H)
 
     r = M.rng(77); i = 0
     for _ in range(150):                                   # scene.js と同じ並び
         side = -1 if r() < 0.5 else 1
         bx = side * (45 + r() * 220); bz = 300 - r() * (3000 + 200); bw = 10 + r() * 26; bh = 22 + r() * 110 * (0.4 + r()); bd = 10 + r() * 24
-        building(i, bx, -bz, bw, bh, bd); i += 1
+        building(i, bx, -bz, bw, bh, bd, 'main'); i += 1
     for _ in range(90):                                    # far skyline against the afterglow
         bx = (r() - 0.5) * 900; bz = -2700 - 120 - r() * 500; bw = 20 + r() * 40; bh = 40 + r() * 200; bd = 20 + r() * 30
-        building(i, bx, -bz, bw, bh, bd); i += 1
+        building(i, bx, -bz, bw, bh, bd, 'far'); i += 1
     r2 = M.rng(4242)
     for _ in range(420):                                   # lower blocks close to the viaduct (roadside parallax)
         side = -1 if r2() < 0.5 else 1
         bx = (36 if side > 0 else -50) * 1.0 + side * r2() * 150; by = -350 + r2() * 3300; bw = 12 + r2() * 30; bd = 12 + r2() * 30; bh = -4 + r2() * 26
-        building(i, bx, by, bw, bh, bd); i += 1
-    mesh_object('Buildings', V, F, mats=[facade, roof], uvs=UV, face_mat=FM)
+        building(i, bx, by, bw, bh, bd, 'low'); i += 1
+    C.obj('Buildings', mats)
 
     ground = simple_material('CityGround', (0.02, 0.02, 0.022), rough=0.9)
     g = Geo(); g.hquad(-1500, 1500, -1200, 4200, gz); g.obj('Ground', ground)
@@ -406,7 +726,7 @@ def build_city():
         s = 0.5 + r3() * 0.9
         g.hquad(x - s, x + s, y - s, y + s, gz + 0.3 + r3() * 6)
     g.obj('CityLights', emission_material('CityLight', (1.0, 0.70, 0.40), P['city_emit']))
-    print('buildings:', i)
+    print('buildings:', i, 'faces:', len(C.F))
 
 
 # ------------------------------------------------------------------------------------------------
