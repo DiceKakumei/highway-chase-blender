@@ -246,7 +246,7 @@ def shot_at(t, k=None):
         zc = zB(TOFF + SLIDE_T0 + 1.1)
         p = [sx + 5.8, 0.42, zc]; l = [bx, 0.75, bz]; fov = 38
     else:            # 11 引き(世界に固定)
-        p = [7.9, 1.4, sz + 9.0]; l = [sx - 0.3, 0.7, sz + 1.0]; fov = 36
+        p = [6.3, 1.25, sz + 6.5]; l = [sx - 0.3, 0.7, sz + 0.8]; fov = 34
     return p, l, fov, roll
 
 

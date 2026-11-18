@@ -183,10 +183,10 @@ def build(Rm, rd):
     fx['smoke_emit'] = []
     r = _rng(3)
     te = SQ.SLIDE_T0 + 0.05
-    while te < SQ.SLIDE_T0 + SQ.SLIDE_DUR:
+    while te < SQ.SLIDE_T0 + SQ.SLIDE_DUR - 0.35:                    # 止まる少し前でやめる(止まった姿を煙で隠さない)
         m, d, pz = Rm.bike_matrix('B', SQ.TOFF + te)
         p = m @ Vector((r.uniform(-0.1, 0.1), -0.60, 0.15))
-        fx['smoke_emit'].append({'t': te, 'p': p, 'seed': int(r.randint(1 << 30)), 'w': r.uniform(-1, 1)})
+        fx['smoke_emit'].append({'t': te, 'p': p, 'seed': int(r.randint(1 << 30)), 'w': r.uniform(-1, 1), 'k': 0.45 + 0.55 * min(1.0, SQ._at('B', 'v', te) / 20.0)})
         te += SMOKE_EVERY
     r2 = _rng(5)
     for i in range(10):                                                # パンクの煙(Aの後輪から、小さめ)
