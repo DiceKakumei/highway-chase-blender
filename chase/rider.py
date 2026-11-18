@@ -184,7 +184,7 @@ def make_flash(R):
     o = R.link(bpy.data.objects.new('flash', me))
     ld = bpy.data.lights.new('flashL', 'POINT'); ld.energy = 260.0; ld.color = (1.0, 0.75, 0.4); ld.shadow_soft_size = 0.05
     lo = bpy.data.objects.new('flashL', ld); R.link(lo, o); lo.location = (0, 0.12, 0)
-    o.rotation_mode = 'QUATERNION'; o.hide_render = True; lo.hide_render = True
+    o.rotation_mode = 'QUATERNION'; o.scale = (0.001, 0.001, 0.001)
     try:
         o.cycles.use_motion_blur = False                    # 一瞬の光なので、にじませない(にじむと長い筋になる)
     except Exception:
@@ -339,5 +339,7 @@ def key(rd, j, pz, root_M, A_world, tau):
     fl = rd['flash']['obj']; mw = Matrix(root_M @ muz)
     fl.location = mw.to_translation(); fl.rotation_quaternion = _cont(rd, 'flash', j, mw.to_quaternion())
     fl.keyframe_insert('location', frame=j); fl.keyframe_insert('rotation_quaternion', frame=j)
-    fl.hide_render = not flash_on; fl.keyframe_insert('hide_render', frame=j)
-    lo = rd['flash']['light']; lo.hide_render = not flash_on; lo.keyframe_insert('hide_render', frame=j)
+    # 表示/非表示のキーを打つと、モーションブラーで途中の位置に長い筋が出る → 常に表示し、大きさ(と光の強さ)で出し入れする
+    k = 1.0 if flash_on else 0.001
+    fl.scale = (k, k, k); fl.keyframe_insert('scale', frame=j)
+    ld = rd['flash']['light'].data; ld.energy = 260.0 * (1.0 if flash_on else 0.0); ld.keyframe_insert('energy', frame=j)
