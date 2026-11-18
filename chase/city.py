@@ -579,15 +579,17 @@ def build_buildings(city):
 # ground: streets, lamps, parks, water, viaduct structure
 # ------------------------------------------------------------------------------------------------
 def build_ground(city):
-    g = R.Geo(); g.hquad(-1800, 1800, -2200, 5600, GZ); g.obj('Ground', ground_material('CityGround', (0.045, 0.043, 0.04), 0.9, 0.08, 0.5))
+    g = R.Geo(); g.hquad(-1800, 1800, -2200, 5600, GZ); g.obj('Ground', ground_material('CityGround', (0.06, 0.057, 0.052), 0.9, 0.08, 0.5))
     acc = Acc()
-    MIN, MAJ, RAIL, GRASS, SOIL, WATER, LAMP, POOL = range(8)
+    MIN, MAJ, RAIL, GRASS, SOIL, WATER, LAMP, POOL, CARB, CARH, CART = range(11)
     mats = [road_material(False), road_material(True), ground_material('RailBed', (0.10, 0.085, 0.07), 0.95, 2.0, 0.5),
             ground_material('Grass', (0.030, 0.050, 0.016), 0.9, 0.25, 0.9), ground_material('Soil', (0.16, 0.13, 0.09), 0.95, 0.2, 0.5),
-            ground_material('Water', (0.01, 0.014, 0.018), 0.08, 0.5, 0.3), R.emission_material('StreetLampHead', (1.0, 0.72, 0.42), R.P['street_emit']), pool_material()]
+            ground_material('Water', (0.01, 0.014, 0.018), 0.08, 0.5, 0.3), R.emission_material('StreetLampHead', (1.0, 0.72, 0.42), R.P['street_emit']), pool_material(),
+            R.simple_material('StreetCar', (0.10, 0.10, 0.11), rough=0.35, metallic=0.6), R.emission_material('StreetCarHead', (1.0, 0.93, 0.82), R.P['street_car_emit']),
+            R.emission_material('StreetCarTail', (1.0, 0.05, 0.03), R.P['street_car_emit'] * 0.35)]
     z = (0.0, 0.0, 0.0, 1.0)
     order = {'rail': 0.03, 'service': 0.05, 'living_street': 0.05, 'residential': 0.06, 'unclassified': 0.06, 'pedestrian': 0.06}
-    nl = 0
+    nl = 0; ncar = 0
     for rd in city['roads']:
         c = rd['c']; w = rd['w']; pts = rd['p']
         zz = GZ + order.get(c, 0.08)
@@ -604,6 +606,35 @@ def build_ground(city):
             v += L
         if c in ('rail', 'service', 'pedestrian'):
             continue
+        if w >= 10:                                                                     # 幹線の車(止まっている。ライトだけ光る)
+            rc = R.M.rng(int(abs(pts[0][0]) * 13 + abs(pts[0][1]) * 7) & 0xffffff)
+            for lane in (-1, 1):
+                pos = rc() * 20.0
+                for (x1, y1), (x2, y2) in zip(pts[:-1], pts[1:]):
+                    L = math.hypot(x2 - x1, y2 - y1)
+                    if L < 0.3:
+                        continue
+                    tx, ty = (x2 - x1) / L, (y2 - y1) / L
+                    while pos < L:
+                        cx = x1 + tx * pos + ty * w * 0.22 * lane; cy = y1 + ty * pos - tx * w * 0.22 * lane
+                        pos += 7.0 + rc() * 26.0
+                        if (-27.0 < cx < 14.0) or abs(cx) > 380 or not (-600 < cy < 3300):
+                            continue
+                        fx, fy = tx * lane, ty * lane                                   # 進む向き(左側通行ではなく、車線ごとに逆向き)
+                        p0 = (cx - fx * 2.2 - fy * 0.9, cy - fy * 2.2 + fx * 0.9)
+                        for (q0, t_, n_, L_) in edges_of([p0, (p0[0] + fx * 4.4, p0[1] + fy * 4.4), (p0[0] + fx * 4.4 + fy * 1.8, p0[1] + fy * 4.4 - fx * 1.8), (p0[0] + fy * 1.8, p0[1] - fx * 1.8)]):
+                            wquad(acc, q0, t_, n_, 0.0, L_, 0.0, zz, zz + 1.35, (0, 0, 1, 0, 1, 1, 0, 1), CARB, z)
+                        acc.quad((p0[0], p0[1], zz + 1.35), (p0[0] + fx * 4.4, p0[1] + fy * 4.4, zz + 1.35), (p0[0] + fx * 4.4 + fy * 1.8, p0[1] + fy * 4.4 - fx * 1.8, zz + 1.35),
+                                 (p0[0] + fy * 1.8, p0[1] - fx * 1.8, zz + 1.35), (0, 0, 1, 0, 1, 1, 0, 1), CARB, z)
+                        for (off_, mat_) in ((4.45, CARH), (-0.05, CART)):
+                            for side in (0.25, 1.25):
+                                bx = p0[0] + fx * off_ + fy * side; by = p0[1] + fy * off_ - fx * side
+                                acc.quad((bx, by, zz + 0.6), (bx + fy * 0.3, by - fx * 0.3, zz + 0.6), (bx + fy * 0.3, by - fx * 0.3, zz + 0.85), (bx, by, zz + 0.85), (0, 0, 1, 0, 1, 1, 0, 1), mat_, z)
+                        hx = cx + fx * 7.0; hy = cy + fy * 7.0                           # ヘッドライトが照らす路面
+                        acc.quad((hx - 4.5, hy - 4.5, GZ + 0.14 + ncar % 7 * 0.003), (hx + 4.5, hy - 4.5, GZ + 0.14 + ncar % 7 * 0.003), (hx + 4.5, hy + 4.5, GZ + 0.14 + ncar % 7 * 0.003),
+                                 (hx - 4.5, hy + 4.5, GZ + 0.14 + ncar % 7 * 0.003), (0, 0, 1, 0, 1, 1, 0, 1), POOL, z)
+                        ncar += 1
+                    pos -= L
         step, hh, rad = (32.0, 8.5, 9.0) if w >= 10 else ((38.0, 7.0, 7.5) if w >= 8 else (46.0, 5.5, 6.0))
         acc_ = (rd['p'][0][0] * 7.3 + rd['p'][0][1] * 3.1) % step
         k = 0
@@ -619,7 +650,7 @@ def build_ground(city):
                     s = 0.28
                     acc.quad((x - s, y - s, GZ + hh), (x + s, y - s, GZ + hh), (x + s, y + s, GZ + hh), (x - s, y + s, GZ + hh), (0, 0, 1, 0, 1, 1, 0, 1), LAMP, z)
                     px = x - (y2 - y1) / L * 2.0 * sg; py = y + (x2 - x1) / L * 2.0 * sg
-                    acc.quad((px - rad, py - rad, GZ + 0.12), (px + rad, py - rad, GZ + 0.12), (px + rad, py + rad, GZ + 0.12), (px - rad, py + rad, GZ + 0.12), (0, 0, 1, 0, 1, 1, 0, 1), POOL, z)
+                    acc.quad((px - rad, py - rad, GZ + 0.10 + nl % 9 * 0.003), (px + rad, py - rad, GZ + 0.10 + nl % 9 * 0.003), (px + rad, py + rad, GZ + 0.10 + nl % 9 * 0.003), (px - rad, py + rad, GZ + 0.10 + nl % 9 * 0.003), (0, 0, 1, 0, 1, 1, 0, 1), POOL, z)
                     nl += 1
             acc_ -= L
     for gset, zz in ((city['green'], GZ + 0.02), (city['water'], GZ + 0.04)):
@@ -644,7 +675,7 @@ def build_ground(city):
                     B, C = C, B
                 acc.tri((A[0], A[1], zz), (B[0], B[1], zz), (C[0], C[1], zz), (0, 0, 1, 0, 0, 1), mat, z)
     acc.obj('Streets', mats)
-    print('streets faces:', acc.faces(), 'street lamps:', nl)
+    print('streets faces:', acc.faces(), 'street lamps:', nl, 'street cars:', ncar)
 
     # 高架の床版と橋脚
     conc = bpy.data.materials.get('Concrete')
