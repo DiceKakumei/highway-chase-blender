@@ -18,8 +18,8 @@ LEGS = {'L': ('LeftUpLeg', 'LeftLeg', 'LeftFoot', 'LeftToeBase'), 'R': ('RightUp
 # 調整値(確認描画で合わせる)。 バイクのプロトタイプ空間の m / rad
 K = {
     'seat': (0.0, -0.20, 0.93),          # 腰(Hips の関節)の位置
-    'pelvis_pitch': 0.25,                # 骨盤の前傾
-    'tuck': 1.22,                        # 走行中の上体の前傾(鉛直から。腰から上の合計)
+    'pelvis_pitch': 0.55,                # 骨盤の前傾
+    'tuck': 1.30,                        # 走行中の上体の前傾(鉛直から。腰から上の合計)
     'aim_lean': 0.52,                    # 銃を構えるときの前傾
     'grip': (0.31, 0.40, 1.02),         # 手の位置(ハンドルのグリップ。右、x は左右対称)
     'peg': (0.215, -0.10, 0.45),         # くるぶしの位置(ステップの上)
@@ -70,6 +70,21 @@ def two_bone(sh, T, l1, l2, pole):
     return sh + u * a + pv * h, sh + u * dist_c
 
 
+def make_opaque(mat):
+    """Meshy の材質は、テクスチャのアルファで半透明になることがある(ライダーが透ける)。 アルファへのつなぎを切って 1 にする"""
+    nt = mat.node_tree
+    for n in nt.nodes:
+        if n.type == 'BSDF_PRINCIPLED':
+            for l in list(n.inputs['Alpha'].links):
+                nt.links.remove(l)
+            n.inputs['Alpha'].default_value = 1.0
+    for attr, val in (('surface_render_method', 'DITHERED'), ('blend_method', 'OPAQUE')):
+        try:
+            setattr(mat, attr, val)
+        except Exception:
+            pass
+
+
 def build(R, root, proto, tag='BikeB'):
     """リグ付きライダーを読み込み、バイクの root の下に置く。 R = render モジュール"""
     d = os.path.join(ROOT, 'assets', 'bike_B2')
@@ -82,6 +97,7 @@ def build(R, root, proto, tag='BikeB'):
         if o.type not in ('ARMATURE', 'MESH'):
             bpy.data.objects.remove(o)
     for m in body.data.materials:
+        make_opaque(m)
         R.vehicle_material(m, 'wheel', False)
     # 静止姿勢のボーン位置(アーマチュア空間)と静止行列
     arm = ao.data
@@ -136,6 +152,7 @@ def import_gun(R, d):
     out = np.c_[nx, ny, ox[:, 2]].astype(np.float32) * K['gun_scale']
     me.vertices.foreach_set('co', out.ravel()); me.update()
     for m in me.materials:
+        make_opaque(m)
         R.vehicle_material(m, 'wheel', False)
     R.smooth_mesh(me, 40.0, 2e-5)
     o.rotation_mode = 'QUATERNION'
@@ -192,15 +209,15 @@ def pose(rd, pz, root_M, A_world, tau):
     sp_yaw = 0.35 * yaw_aim * aim_k
     Xh = Xfr @ at(RG.rot3((1, 0, 0), -pel) @ RG.rot3((0, 1, 0), pz['torso_roll']), rp['Hips'])
     X = {'Hips': Xh}
-    shares = {'Spine02': 0.30, 'Spine01': 0.35, 'Spine': 0.35}
+    shares = {'Spine02': 0.40, 'Spine01': 0.35, 'Spine': 0.25}
     prev = 'Hips'
     for n in ('Spine02', 'Spine01', 'Spine'):
         Rn = RG.rot3((1, 0, 0), -rel * shares[n]) @ RG.rot3((0, 0, 1), sp_yaw * shares[n])
         X[n] = X[prev] @ at(Rn, rp[n]); prev = n
     nk = 0.20
-    X['neck'] = X['Spine'] @ at(RG.rot3((1, 0, 0), +0.25 * lean), rp['neck'])
+    X['neck'] = X['Spine'] @ at(RG.rot3((1, 0, 0), +0.30 * lean), rp['neck'])
     hy = pz['head_yaw'] + 0.65 * yaw_aim * aim_k
-    X['Head'] = X['neck'] @ at(RG.rot3((0, 0, 1), hy) @ RG.rot3((0, 1, 0), pz['head_roll']) @ RG.rot3((1, 0, 0), +0.35 * lean), rp['Head'])
+    X['Head'] = X['neck'] @ at(RG.rot3((0, 0, 1), hy) @ RG.rot3((0, 1, 0), pz['head_roll']) @ RG.rot3((1, 0, 0), +0.30 * lean), rp['Head'])
     # --- 腕 ---
     out_pos = {}
     # 右手の目標: grip → chest → aim

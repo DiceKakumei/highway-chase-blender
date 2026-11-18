@@ -1043,7 +1043,7 @@ def apply_frame(S, cam, f, blur):
     t = toff + f / M.FPS
     dcase = None
     if P.get('dbg_cases'):                                  # 続編の確認用: コマごとに時刻とカメラを決める
-        dcase = P['dbg_cases'][P.get('_fi', 0) % len(P['dbg_cases'])]
+        dcase = P['dbg_cases'][f % len(P['dbg_cases'])]        # コマ番号で選ぶ(1コマずつ別ジョブで描くため)
         t = toff + dcase[0]
     k = M.shot_index(t); dt = 1.0 / M.FPS
     P['_f'] = f
