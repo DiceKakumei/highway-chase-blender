@@ -23,6 +23,10 @@ RIG = {
     'bike_B': dict(bike_col='teal', hip=(0.0, -0.25, 0.86), neck=(0.0, 0.27, 1.15), head_c=(0.0, 0.325, 1.29), head_r=(0.17, 0.20, 0.19),
                    steer_head=(0.0, 0.52, 0.92), axle=(0.0, 0.78, 0.30), shoulder_y=0.10, grip_y=0.52, frame_pivot=(0.0, 0.08, 0.55),
                    wheel_f=(0.78, 0.30, 0.30), wheel_r=(-0.60, 0.305, 0.305)),
+    # 続編のB: ライダー無しのバイク単体(ライダーは別のアーマチュア)。位置の値は bike_B と同じ(同じ画像から作ったので重なる)
+    'bike_B2': dict(bike_col='teal', rider=False, hip=(0.0, -0.25, 0.86), neck=(0.0, 0.27, 1.15), head_c=(0.0, 0.325, 1.29), head_r=(0.17, 0.20, 0.19),
+                    steer_head=(0.0, 0.52, 0.92), axle=(0.0, 0.78, 0.30), shoulder_y=0.10, grip_y=0.52, frame_pivot=(0.0, 0.08, 0.55),
+                    wheel_f=(0.78, 0.30, 0.30), wheel_r=(-0.60, 0.305, 0.305)),
 }
 
 
@@ -73,11 +77,13 @@ def compute_weights(P, C, cfg):
     rz = sm((z - (hip[2] - 0.02)) / 0.16)
     ry = sm((y + 0.55) / 0.10) * (1 - sm((y - 0.50) / 0.10))
     rider = rz * ry * (1 - 0.85 * isb) * (1 - wst)
+    if cfg.get('rider') is False:
+        rider = rider * 0.0
     # 頭: ヘルメットの楕円体(外側へ滑らかに)
     hc = np.array(cfg['head_c'], np.float32); hr = np.array(cfg['head_r'], np.float32)
     e = np.linalg.norm((P - hc) / hr, axis=1)
     wh_raw = 1 - sm((e - 1.0) / 0.45)
-    w_head = np.minimum(1.0, wh_raw * (1 - wst) * (1 - 0.9 * isb))
+    w_head = np.minimum(1.0, wh_raw * (1 - wst) * (1 - 0.9 * isb)) * (0.0 if cfg.get('rider') is False else 1.0)
     # 腕: 体の横(|x|>0.1)、肩より前 → 肩(torso)から手(steer_s)へ
     ys, yg = cfg['shoulder_y'], cfg['grip_y']
     arm = sm((np.abs(x) - 0.10) / 0.07) * sm((y - (ys - 0.05)) / 0.10) * sm((z - 0.82) / 0.06)

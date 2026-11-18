@@ -27,6 +27,9 @@ on:
       video:
         description: "1 = 連番を結合して音声つきの mp4 にする"
         default: "0"
+      audio:
+        description: "video=1 のとき使う音声(リポジトリ内のパス)"
+        default: "assets/audio_acid_v5.wav"
       base:
         description: "前回の Release タグ(例: r31)。指定すると、そのEXRに今回描いたコマを上書きして合体する。空なら今回のコマだけ"
         default: ""
@@ -153,8 +156,8 @@ jobs:
         if: ${{ inputs.video == '1' }}
         run: |
           ls png/*.png | wc -l
-          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i assets/audio_acid_v5.wav -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -shortest -movflags +faststart chase_hq.mp4
-          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i assets/audio_acid_v5.wav -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 20 -maxrate 6M -bufsize 12M -pix_fmt yuv420p -c:a aac -b:a 192k -ar 48000 -shortest -movflags +faststart chase_phone.mp4
+          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i ${{ inputs.audio }} -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -shortest -movflags +faststart chase_hq.mp4
+          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i ${{ inputs.audio }} -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 20 -maxrate 6M -bufsize 12M -pix_fmt yuv420p -c:a aac -b:a 192k -ar 48000 -shortest -movflags +faststart chase_phone.mp4
           for f in chase_hq.mp4 chase_phone.mp4; do ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames,width,height -show_entries format=duration,size -of default=nw=1 $f; done
       - name: Upload
         env: { GH_TOKEN: "${{ github.token }}" }

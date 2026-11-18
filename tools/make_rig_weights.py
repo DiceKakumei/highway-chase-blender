@@ -13,7 +13,7 @@ CFG = json.load(open(os.path.join(ROOT, 'vehicles.json'), encoding='utf-8'))
 
 def load_proto(name):
     c = CFG[name]
-    sc = trimesh.load(os.path.join(ROOT, 'assets', name, '2_nowheel.glb'), force='scene', process=False)
+    sc = trimesh.load(os.path.join(ROOT, 'assets', name, c.get('body_file', '2_nowheel.glb')), force='scene', process=False)
     V, C = [], []
     for nm in sc.graph.nodes_geometry:
         T, gname = sc.graph[nm]; g = sc.geometry[gname]
@@ -24,7 +24,7 @@ def load_proto(name):
         V.append(v); C.append(im[y, x])
     v = np.vstack(V); col = np.vstack(C)
     b = np.c_[v[:, 0], -v[:, 2], v[:, 1]]                       # glTF(Y上) -> Blender(Z上)
-    rot = {'bike': math.pi, 'car': -math.pi / 2}[c['axes']]
+    rot = math.radians(c['rot_deg']) if 'rot_deg' in c else {'bike': math.pi, 'car': -math.pi / 2}[c['axes']]
     ca, sa = math.cos(rot), math.sin(rot)
     b = np.c_[ca * b[:, 0] - sa * b[:, 1], sa * b[:, 0] + ca * b[:, 1], b[:, 2]]
     lo, hi = b.min(0), b.max(0)

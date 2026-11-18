@@ -15,6 +15,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import motion as M   # noqa: E402
 import rig as RG     # noqa: E402
+import sequel as SQ  # noqa: E402
+import rider as RD   # noqa: E402
 
 CFG = json.load(open(os.path.join(ROOT, 'vehicles.json'), encoding='utf-8'))
 
@@ -63,6 +65,8 @@ P = {
     'dbg_truck': None,       # 確認用カメラ(主役のトラック基準)
     'relax_iters': 10,       # 車体メッシュの凹凸をならす回数(0 = ならさない)
     'dbg_idx': None,         # 確認用カメラの対象(S['cars'] の番号。None = 主役のトラック)
+    'scene': 'main',         # 'sequel' = 続編(打ち合い)。motion の代わりに sequel を使う
+    'dbg_cases': None,       # 続編の確認用: [[τ, カメラxyz, 見る先xyz, fov], ...](Bの位置から。コマの順に使う)
 }
 
 Y0, Y1 = -300.0, 2700.0          # road extent (three.js Z0=300 .. Z1=-2700)
@@ -750,8 +754,8 @@ def build_proto(name):
     """-> dict(body=mesh, wheels=[(mesh, x, y, r)], lamps=mesh, head=(y, z), tail=(y, z), size)"""
     c = CFG[name]; t0 = time.time()
     d = os.path.join(ROOT, 'assets', name)
-    rot = {'bike': math.pi, 'car': -math.pi / 2}[c['axes']]
-    ob = import_glb(os.path.join(d, '2_nowheel.glb'))
+    rot = math.radians(c['rot_deg']) if 'rot_deg' in c else {'bike': math.pi, 'car': -math.pi / 2}[c['axes']]
+    ob = import_glb(os.path.join(d, c.get('body_file', '2_nowheel.glb')))
     me = ob.data
     me.transform(Matrix.Rotation(rot, 4, 'Z'))
     co = co_array(me); lo, hi = co.min(0), co.max(0)
@@ -784,7 +788,7 @@ def build_proto(name):
         print('   rig weights: %d verts, max match distance %.5f m, mean weights %s' % (len(cb), far, dict(zip(RG.BONES, rigw.mean(0).round(3).tolist()))))
 
     # wheels: cut the islands out of the wheel GLB, centre, scale, (flip)
-    ow = import_glb(os.path.join(d, '3_wheels.glb'))
+    ow = import_glb(os.path.join(ROOT, 'assets', c.get('wheels_dir', name), '3_wheels.glb'))
     wme = ow.data
     wme.transform(Matrix.Rotation(math.pi / 2, 4, 'Z'))          # axle -> X, glTF x -> Y
     for m in wme.materials:
@@ -944,12 +948,19 @@ TRUCK_CABS = [(0.5, 1, 1.50), (0.5, 1, 1.30), (0.98, 0, 0.80), (0.82, 0, 0.50), 
 
 
 def build_vehicles():
-    protos = {n: build_proto(n) for n in CFG}
+    seq = P['scene'] == 'sequel'
+    protos = {n: build_proto(n) for n in CFG if n != ('bike_B' if seq else 'bike_B2')}
     S = {}
-    S['A'] = instance(protos['bike_A'], 'BikeA'); S['B'] = instance(protos['bike_B'], 'BikeB')
+    S['A'] = instance(protos['bike_A'], 'BikeA'); S['B'] = instance(protos['bike_B2' if seq else 'bike_B'], 'BikeB')
+    if seq:
+        S['B']['rider'] = RD.build(sys.modules[__name__], S['B']['root'], protos['bike_B2'])
     cars = []
     pick = M.rng(555)
-    for i, c in enumerate(M.traffic()):
+    traffic = M.traffic()
+    hidden = SQ.hidden_cars(traffic) if seq else set()
+    if seq:
+        print('sequel: hidden cars %d of %d' % (len(hidden), len(traffic)))
+    for i, c in enumerate(traffic):
         pal = c['pal']
         if c['kind'] == 'truck':
             name = 'veh_truck'; cab = TRUCK_CABS[7] if c['hero'] else TRUCK_CABS[pal % 8]; col = (cab[2], cab[2], cab[2], cab[0])
@@ -957,6 +968,8 @@ def build_vehicles():
             q = pick()
             name = 'veh_sedan' if q < 0.4 else ('veh_hatch' if q < 0.7 else 'veh_suv')
             col = SUV_VARS[pal] if name == 'veh_suv' else (*WHITE_TINTS[pal], 0.5)
+        if i in hidden:
+            continue                                        # 続編の2台・カメラの邪魔になる車は置かない(乱数は進めてある)
         inst = instance(protos[name], 'Car%03d' % i, color=col)
         if name == 'veh_truck':
             bpy.data.objects['Car%03d_body' % i].pass_index = cab[1]
@@ -1024,15 +1037,23 @@ def key(obj, j, loc=None, rot=None):
 
 
 def apply_frame(S, cam, f, blur):
-    t = f / M.FPS; k = M.shot_index(t); dt = 1.0 / M.FPS
+    toff = getattr(M, 'TOFF', 0.0)
+    t = toff + f / M.FPS
+    dcase = None
+    if P.get('dbg_cases'):                                  # 続編の確認用: コマごとに時刻とカメラを決める
+        dcase = P['dbg_cases'][P.get('_fi', 0) % len(P['dbg_cases'])]
+        t = toff + dcase[0]
+    k = M.shot_index(t); dt = 1.0 / M.FPS
     P['_f'] = f
     times = ((0, t - dt), (1, t), (2, t + dt)) if blur else ((1, t),)
     campos_y = M.to_blender(M.shot_at(t, k)[0])[1]
     spin = [c for c in S['cars'] if abs(-M.pos_of(c['c'], t) - campos_y) < P['wheel_spin_range']]
     prev = {}
     for j, tt in times:
+        mats = {}
         for bid in ('A', 'B'):
             m, dist, pose = bike_matrix(bid, tt)
+            mats[bid] = m
             e = m.to_euler('XYZ')
             if bid in prev:
                 e.make_compatible(prev[bid])
@@ -1040,8 +1061,11 @@ def apply_frame(S, cam, f, blur):
             key(S[bid]['root'], j, loc=m.to_translation(), rot=e)
             if 'rig' in S[bid]:
                 key_bike_rig(S[bid], pose, j)
-            for w, r in S[bid]['wheels']:
-                key(w, j, rot=(-dist / r, 0, 0))
+            if 'rider' in S[bid]:                           # 続編: Bのライダーと銃。Aの胴体のほうへ銃を向ける
+                aw = mats['A'] @ Vector((0, 0.0, 0.95)) if 'A' in mats else Vector((0, 0, 0))
+                RD.key(S[bid]['rider'], j, pose, np.array(m), np.array(aw), tt - toff)
+            for wi, (w, r) in enumerate(S[bid]['wheels']):
+                key(w, j, rot=(-(pose.get('dist_r', dist) if wi == 0 else dist) / r, 0, 0))
         for c in S['cars']:
             key(c['root'], j, loc=(c['c']['x'], -M.pos_of(c['c'], tt), 0.0))
         for c in spin:
@@ -1060,6 +1084,10 @@ def apply_frame(S, cam, f, blur):
             if isinstance(dd[0], list):
                 dd = dd[P.get("_f", 0) % len(dd)]
             cp = tl + Vector(dd[0:3]); lp = tl + Vector(dd[3:6]); fov = dd[6]
+            f_ = (lp - cp).normalized(); r_ = f_.cross(Vector((0, 0, 1))).normalized(); u_ = r_.cross(f_)
+            m = Matrix.Translation(cp) @ Matrix((r_, u_, -f_)).transposed().to_4x4()
+        if dcase is not None:                                # 続編の確認用カメラ(Bの位置から)
+            bl = mats['B'].to_translation(); cp = bl + Vector(dcase[1:4]); lp = bl + Vector(dcase[4:7]); fov = dcase[7]
             f_ = (lp - cp).normalized(); r_ = f_.cross(Vector((0, 0, 1))).normalized(); u_ = r_.cross(f_)
             m = Matrix.Translation(cp) @ Matrix((r_, u_, -f_)).transposed().to_4x4()
         e = m.to_euler('XYZ')
@@ -1124,11 +1152,14 @@ def parse_frames(spec):
 
 
 def main():
+    global M
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
     a = {'frames': '24', 'out': 'out', 'samples': '48', 'res': '960x540', 'params': '{}'}
     for i in range(0, len(argv) - 1, 2):
         a[argv[i].lstrip('-')] = argv[i + 1]
     P.update(json.loads(a['params'] or '{}'))
+    if P['scene'] == 'sequel':
+        M = SQ
     w, h = (int(v) for v in a['res'].split('x'))
     frames = parse_frames(a['frames'])
     os.makedirs(a['out'], exist_ok=True)
@@ -1144,7 +1175,8 @@ def main():
     build_s = time.time() - T0
     print('BUILD %.1fs  objects %d' % (build_s, len(bpy.data.objects)))
     log = []
-    for f in frames:
+    for fi, f in enumerate(frames):
+        P['_fi'] = fi
         t1 = time.time()
         t, k = apply_frame(S, cam, f, bool(P['motion_blur']))
         t2 = time.time()

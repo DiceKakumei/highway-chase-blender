@@ -12,6 +12,7 @@ G = {
     'contrast': 1.06, 'sat': 1.05,
     'vignette': 0.22, 'grain': 0.012,
     'lift': [0.0, 0.0, 0.004],
+    'title': 1, 'fade_in': 0.0, 'fade_out': 1,     # 続編は title=0, fade_in=0.8, fade_out=0
 }
 FONTS = ['/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc', '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc',
          'C:/Windows/Fonts/YuGothB.ttc', 'C:/Windows/Fonts/meiryob.ttc']
@@ -103,11 +104,16 @@ def finish(out, f, notitle=False):
     h, w = out.shape[:2]
     a = min((t - 0.5) / 0.5, (4.2 - t) / 0.7)
     a = min(1.0, max(0.0, a))
-    if a > 0 and not notitle:
+    if a > 0 and not notitle and G['title']:
         lay = np.asarray(title_layer(w, h)).astype(np.float32) / 255.0
         al = lay[..., 3:4] * a
         out = out * (1 - al) + lay[..., :3] * al
-    return out * (1 - sm((t - 26.0) / 3.8))
+    k = 1.0
+    if G['fade_out']:
+        k *= 1 - sm((t - 26.0) / 3.8)
+    if G['fade_in'] > 0:
+        k *= sm(t / G['fade_in'])
+    return out * k
 
 
 def main():
