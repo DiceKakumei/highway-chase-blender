@@ -162,23 +162,23 @@ def import_gun(R, d):
 
 def make_flash(R):
     """マズルフラッシュ(銃口から前へ伸びる光る星 + 点光源)。銃口の向き = +Y"""
-    mat = R.emission_material('MuzzleFlash', (1.0, 0.72, 0.30), 250.0)
+    mat = R.emission_material('MuzzleFlash', (1.0, 0.72, 0.30), 110.0)
     V, F = [], []
     def tri(a, b, c): n = len(V); V.extend([a, b, c]); F.append((n, n + 1, n + 2))
     seg = 8
     for i in range(seg):                                   # 前へ伸びる円錐
         a0 = 2 * math.pi * i / seg; a1 = 2 * math.pi * (i + 1) / seg
-        tri((0.03 * math.cos(a0), 0, 0.03 * math.sin(a0)), (0.03 * math.cos(a1), 0, 0.03 * math.sin(a1)), (0, 0.34, 0))
+        tri((0.022 * math.cos(a0), 0, 0.022 * math.sin(a0)), (0.022 * math.cos(a1), 0, 0.022 * math.sin(a1)), (0, 0.15, 0))
     for k in range(8):                                     # 横へ出るとげ
         a = 2 * math.pi * k / 8
-        tip = (0.15 * math.cos(a), 0.03, 0.15 * math.sin(a)); w = 0.025
+        tip = (0.085 * math.cos(a), 0.02, 0.085 * math.sin(a)); w = 0.016
         tri((-w * math.sin(a), 0.0, w * math.cos(a)), (w * math.sin(a), 0.0, -w * math.cos(a)), tip)
     for k in range(4):                                     # 斜め前へのとげ
         a = 2 * math.pi * k / 4 + 0.4
-        tri((0.02, 0.0, 0.0), (-0.02, 0.0, 0.0), (0.09 * math.cos(a), 0.15, 0.09 * math.sin(a)))
+        tri((0.02, 0.0, 0.0), (-0.02, 0.0, 0.0), (0.05 * math.cos(a), 0.09, 0.05 * math.sin(a)))
     me = bpy.data.meshes.new('flash'); me.from_pydata(V, [], F); me.materials.append(mat); me.update()
     o = R.link(bpy.data.objects.new('flash', me))
-    ld = bpy.data.lights.new('flashL', 'POINT'); ld.energy = 900.0; ld.color = (1.0, 0.75, 0.4); ld.shadow_soft_size = 0.05
+    ld = bpy.data.lights.new('flashL', 'POINT'); ld.energy = 260.0; ld.color = (1.0, 0.75, 0.4); ld.shadow_soft_size = 0.05
     lo = bpy.data.objects.new('flashL', ld); R.link(lo, o); lo.location = (0, 0.12, 0)
     o.rotation_mode = 'QUATERNION'; o.hide_render = True; lo.hide_render = True
     return {'obj': o, 'light': lo, 'mat': mat}
@@ -302,22 +302,34 @@ def parent_X(X, parent, n):
     return X[p] if p is not None else np.eye(4)
 
 
+def _cont(rd, name, j, q):
+    """クォータニオンの符号をそろえる(Blender のキー補間は成分ごと。符号が反転すると、間で大きく回って残像になる)"""
+    pq = rd.setdefault('_pq', {})
+    if j == 0:
+        pq.clear()
+    last = pq.get(name)
+    if last is not None and q.dot(last) < 0:
+        q = -q
+    pq[name] = q.copy()
+    return q
+
+
 def key(rd, j, pz, root_M, A_world, tau):
     """ボーンと銃のキーを打つ(フレーム j)"""
     basis, gun_M, vis, flash_on, muz = pose(rd, pz, root_M, A_world, tau)
     ao = rd['ao']
     for n, (loc, rot) in basis.items():
         pb = ao.pose.bones[n]
-        pb.location = loc; pb.rotation_quaternion = rot
+        pb.location = loc; pb.rotation_quaternion = _cont(rd, n, j, rot)
         pb.keyframe_insert('location', frame=j); pb.keyframe_insert('rotation_quaternion', frame=j)
     # 銃は root の子ではなく、ワールドで直接キーする(root_M @ gun_M)
     gw = root_M @ gun_M
     g = rd['gun']; mm = Matrix(gw)
-    g.location = mm.to_translation(); g.rotation_quaternion = mm.to_quaternion()
+    g.location = mm.to_translation(); g.rotation_quaternion = _cont(rd, 'gun', j, mm.to_quaternion())
     g.keyframe_insert('location', frame=j); g.keyframe_insert('rotation_quaternion', frame=j)
     g.hide_render = vis < 0.5; g.keyframe_insert('hide_render', frame=j)
     fl = rd['flash']['obj']; mw = Matrix(root_M @ muz)
-    fl.location = mw.to_translation(); fl.rotation_quaternion = mw.to_quaternion()
+    fl.location = mw.to_translation(); fl.rotation_quaternion = _cont(rd, 'flash', j, mw.to_quaternion())
     fl.keyframe_insert('location', frame=j); fl.keyframe_insert('rotation_quaternion', frame=j)
     fl.hide_render = not flash_on; fl.keyframe_insert('hide_render', frame=j)
     lo = rd['flash']['light']; lo.hide_render = not flash_on; lo.keyframe_insert('hide_render', frame=j)

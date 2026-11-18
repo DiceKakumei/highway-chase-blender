@@ -206,13 +206,13 @@ def smoke_material(Rm):
     nt.links.new(tc.outputs['Object'], ln.inputs[0])
     fall = Rm.math_node(nt, 'SUBTRACT', 1.0, ln.outputs['Value'], clamp=True)
     fall = Rm.math_node(nt, 'POWER', fall, 1.6)
-    noi = nt.nodes.new('ShaderNodeTexNoise'); noi.inputs['Scale'].default_value = 3.0; noi.inputs['Detail'].default_value = 3.0
+    noi = nt.nodes.new('ShaderNodeTexNoise'); noi.inputs['Scale'].default_value = 1.3; noi.inputs['Detail'].default_value = 0.6
     nt.links.new(tc.outputs['Object'], noi.inputs['Vector'])
-    nz = Rm.math_node(nt, 'MAXIMUM', Rm.math_node(nt, 'MULTIPLY', noi.outputs['Fac'], 1.6), 0.25)
+    nz = Rm.math_node(nt, 'ADD', Rm.math_node(nt, 'MULTIPLY', noi.outputs['Fac'], 0.9), 0.55)
     dens = Rm.math_node(nt, 'MULTIPLY', Rm.math_node(nt, 'MULTIPLY', fall, nz), oi.outputs['Alpha'])
     pv = nt.nodes.new('ShaderNodeVolumePrincipled')
     pv.inputs['Color'].default_value = (0.80, 0.80, 0.82, 1.0)
-    nt.links.new(Rm.math_node(nt, 'MULTIPLY', dens, 3.2), pv.inputs['Density'])
+    nt.links.new(Rm.math_node(nt, 'MULTIPLY', dens, 2.6), pv.inputs['Density'])
     try:
         pv.inputs['Anisotropy'].default_value = 0.3
     except Exception:
