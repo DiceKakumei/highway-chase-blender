@@ -18,9 +18,11 @@ PARENT = {'static': None, 'frame': 'static', 'steer_u': 'static', 'steer_s': 'fr
 
 RIG = {
     'bike_A': dict(bike_col='red', hip=(0.0, -0.28, 0.82), neck=(0.0, 0.28, 1.09), head_c=(0.0, 0.335, 1.22), head_r=(0.17, 0.21, 0.19),
-                   steer_head=(0.0, 0.50, 0.88), axle=(0.0, 0.777, 0.30), shoulder_y=0.10, grip_y=0.52, frame_pivot=(0.0, 0.08, 0.55)),
+                   steer_head=(0.0, 0.50, 0.88), axle=(0.0, 0.777, 0.30), shoulder_y=0.10, grip_y=0.52, frame_pivot=(0.0, 0.08, 0.55),
+                   wheel_f=(0.777, 0.30, 0.30), wheel_r=(-0.62, 0.31, 0.31)),
     'bike_B': dict(bike_col='teal', hip=(0.0, -0.25, 0.86), neck=(0.0, 0.27, 1.15), head_c=(0.0, 0.325, 1.29), head_r=(0.17, 0.20, 0.19),
-                   steer_head=(0.0, 0.52, 0.92), axle=(0.0, 0.78, 0.30), shoulder_y=0.10, grip_y=0.52, frame_pivot=(0.0, 0.08, 0.55)),
+                   steer_head=(0.0, 0.52, 0.92), axle=(0.0, 0.78, 0.30), shoulder_y=0.10, grip_y=0.52, frame_pivot=(0.0, 0.08, 0.55),
+                   wheel_f=(0.78, 0.30, 0.30), wheel_r=(-0.60, 0.305, 0.305)),
 }
 
 
@@ -89,8 +91,24 @@ def compute_weights(P, C, cfg):
     rem = np.maximum(0.0, 1.0 - used)
     wz = sm((z - 0.42) / 0.30)
     W = np.stack([rem * (1 - wz), rem * wz, w_su, w_ss, w_torso, w_head], axis=1).astype(np.float32)
-    s = W.sum(1, keepdims=True)
-    return W / np.maximum(s, 1e-6)
+    W /= np.maximum(W.sum(1, keepdims=True), 1e-6)
+    # タイヤの上のフェンダー(泥よけ)は車輪と一緒に動く(ばね下)。車体の上下に付いていくと、タイヤとの間隔がビヨンビヨン変わって見える。
+    #   前: フォークに付く = ステアリングだけ(steer_u)。 後ろ: 動かない(static)。
+    zf = wheel_zone(P, cfg['wheel_f']); zr = wheel_zone(P, cfg['wheel_r'])
+    W *= (1 - zf)[:, None]; W[:, 2] += zf
+    W *= (1 - zr)[:, None]; W[:, 0] += zr
+    return W / np.maximum(W.sum(1, keepdims=True), 1e-6)
+
+
+def wheel_zone(P, wheel):
+    """車輪の中心(y, z, 半径 r)のまわり、車軸より上の、タイヤから約10cmまでの帯 = フェンダー。1 = 完全に車輪側"""
+    yc, zc, r = wheel
+    dy = P[:, 1] - yc; dz = P[:, 2] - zc
+    d = np.hypot(dy, dz)
+    band = 1 - sm((d - (r + 0.10)) / 0.05)
+    above = sm((dz + 0.04) / 0.06)
+    along = 1 - sm((np.abs(dy) - (r + 0.05)) / 0.06)
+    return (band * above * along).astype(np.float32)
 
 
 # ---- 姿勢(各ボーンの「剛体の動き」: プロトタイプ空間の 4x4) ---------------------------------------------
