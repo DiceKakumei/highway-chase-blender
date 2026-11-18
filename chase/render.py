@@ -717,6 +717,8 @@ def vehicle_material(mat, kind, tail_mask):
         if kind == 'body':
             hs = nt.nodes.new('ShaderNodeHueSaturation')
             nt.links.new(src, hs.inputs['Color']); nt.links.new(oi.outputs['Alpha'], hs.inputs['Hue'])
+            # 物体の番号(pass_index) 1 以上 = 彩度をほぼ落とす(白・銀・灰色の車体)。0 = そのまま
+            nt.links.new(math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', math_node(nt, 'MINIMUM', oi.outputs['Object Index'], 1.0), 0.93)), hs.inputs['Saturation'])
             nt.links.new(vmath(nt, 'MULTIPLY', hs.outputs['Color'], oi.outputs['Color']), b.inputs['Base Color'])
             if tail_mask:                                  # 赤いテールランプの部分を光らせる
                 sc = nt.nodes.new('ShaderNodeSeparateColor'); nt.links.new(src, sc.inputs[0])
@@ -936,8 +938,9 @@ def instance(proto, tag, color=(1, 1, 1, 0.5), head_light=True):
 
 
 WHITE_TINTS = [(1, 1, 1), (0.55, 0.57, 0.60), (0.035, 0.035, 0.04), (1, 1, 1), (0.13, 0.14, 0.15), (0.42, 0.03, 0.03), (0.04, 0.08, 0.28), (0.88, 0.86, 0.80)]
-SUV_VARS = [(1, 1, 1, 0.5), (0.35, 0.35, 0.35, 0.5), (1, 1, 1, 0.92), (0.2, 0.2, 0.2, 0.5), (1, 1, 1, 0.5), (0.8, 0.8, 0.8, 0.85), (1.6, 1.6, 1.6, 0.5), (1, 1, 1, 0.30)]
-TRUCK_HUES = [0.5, 0.5, 1.0, 0.82, 0.5, 0.25, 1.0, 0.5]
+SUV_VARS = [(1, 1, 1, 0.5), (0.35, 0.35, 0.35, 0.5), (1, 1, 1, 0.92), (0.2, 0.2, 0.2, 0.5), (1, 1, 1, 0.5), (0.55, 0.55, 0.55, 0.92), (1.3, 1.3, 1.3, 0.5), (0.45, 0.45, 0.45, 0.30)]
+# トラックのキャブの色: (色相の回転(0.5=そのまま。オレンジが元の色), 彩度を落とす(1=落とす), 明るさ)。 紫・ピンクなど実在しない色は使わない。
+TRUCK_CABS = [(0.5, 1, 1.50), (0.5, 1, 1.30), (0.98, 0, 0.80), (0.82, 0, 0.50), (0.5, 1, 0.95), (0.43, 0, 0.85), (0.5, 1, 1.60), (0.5, 0, 1.0)]
 
 
 def build_vehicles():
@@ -949,12 +952,14 @@ def build_vehicles():
     for i, c in enumerate(M.traffic()):
         pal = c['pal']
         if c['kind'] == 'truck':
-            name = 'veh_truck'; col = (1, 1, 1, 0.5) if c['hero'] else (1, 1, 1, TRUCK_HUES[pal])
+            name = 'veh_truck'; cab = TRUCK_CABS[7] if c['hero'] else TRUCK_CABS[pal % 8]; col = (cab[2], cab[2], cab[2], cab[0])
         else:
             q = pick()
             name = 'veh_sedan' if q < 0.4 else ('veh_hatch' if q < 0.7 else 'veh_suv')
             col = SUV_VARS[pal] if name == 'veh_suv' else (*WHITE_TINTS[pal], 0.5)
         inst = instance(protos[name], 'Car%03d' % i, color=col)
+        if name == 'veh_truck':
+            bpy.data.objects['Car%03d_body' % i].pass_index = cab[1]
         inst['c'] = c
         if c['dir'] > 0:
             inst['root'].rotation_euler = (0, 0, math.pi)
