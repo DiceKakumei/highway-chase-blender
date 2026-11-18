@@ -8,7 +8,8 @@ from mathutils import Matrix, Vector
 import sequel as SQ
 
 G = 9.81
-CASING_SLOTS, IMPACT_SLOTS, SMOKE_N = 10, 4, 56
+CASING_SLOTS, IMPACT_SLOTS, SMOKE_N = 10, 4, 64
+RIM_N = 30
 SPARKS_PER, DEBRIS_PER = 5, 3
 SMOKE_LIFE, SMOKE_EVERY = 2.0, 0.045
 SKID_STEP = 0.05
@@ -22,7 +23,7 @@ def _rng(seed):
 def impacts(Rm):
     """発砲ごとの着弾点(ワールド、路面)。 Aの近くの路面で、Aを外す。 Rm = render モジュール(bike_matrix を使う)"""
     r = _rng(7); out = []
-    for n, ft in enumerate(SQ.FIRES):
+    for n, ft in enumerate(SQ.FIRES[:-1]):                  # 最後の1発は後輪に当たる(hit_data)
         ta = SQ.TOFF + ft + 0.07
         pa = Vector((SQ.xA(ta), -SQ.zA(ta), 0.0))
         side = r.choice([-1.0, 1.0]) * r.uniform(0.8, 2.4)
@@ -64,6 +65,40 @@ def casing_pos(c, tau):
         if p.z < 0.006:
             p.z = 0.006; v = Vector((v.x * 0.5, v.y * 0.5, -v.z * 0.35))
     return p
+
+
+def ballistic(p0, v0, age, k):
+    """空気抵抗(速度に比例 k)と重力の下の位置"""
+    g = Vector((0, 0, -G)); e = math.exp(-k * age)
+    return p0 + g * (age / k) + (v0 - g / k) * ((1 - e) / k)
+
+
+def a_rear_contact(Rm, tau, off=(0.0, -0.60, 0.0)):
+    m, d, pz = Rm.bike_matrix('A', SQ.TOFF + tau)
+    return m @ Vector(off)
+
+
+def hit_data(Rm):
+    """Aの後輪への命中(τ=HIT_T)と、その後のリム火花・パンクの煙"""
+    r = _rng(21)
+    t = SQ.HIT_T
+    p = a_rear_contact(Rm, t, (-0.08, -0.60, 0.28))                  # 後輪の左の側面(カメラ側)
+    vA = SQ._at('A', 'v', t)
+    sparks = []
+    for i in range(16):
+        a = r.uniform(0, 2 * math.pi)
+        sparks.append(Vector((math.cos(a) * r.uniform(1, 5) - 1.0, vA * 0.55 + math.sin(a) * r.uniform(1, 5), r.uniform(0.5, 5.0))))
+    rubber = []
+    for i in range(8):
+        a = r.uniform(0, 2 * math.pi)
+        rubber.append(Vector((math.cos(a) * r.uniform(1, 4) - 1.0, vA * 0.7 + math.sin(a) * r.uniform(0, 3), r.uniform(0.5, 3.0))))
+    rim = []
+    te = t + 0.03
+    while te < t + 2.3:
+        c = a_rear_contact(Rm, te, (0.0, -0.60, 0.02)); vv = SQ._at('A', 'v', te)
+        rim.append({'t': te, 'p': c, 'v': Vector((r.uniform(-2.5, 2.5), vv * 0.25 + r.uniform(-1.5, 1.5), r.uniform(0.8, 3.5))), 'a': math.exp(-(te - t) / 1.4)})
+        te += 1.0 / 55.0
+    return {'t': t, 'p': p, 'sparks': sparks, 'rubber': rubber, 'rim': rim}
 
 
 def spark_pos(imp, i, age):
@@ -118,6 +153,13 @@ def build(Rm, rd):
         sm_objs.append(o)
     fx['smoke'] = sm_objs
     fx['impacts'] = impacts(Rm)
+    fx['hit'] = hit_data(Rm)
+    fx['hit_spark'] = [ico('hit_spark%d' % i, 0.016, spark_m, 1) for i in range(16)]
+    fx['hit_rubber'] = [ico('hit_rubber%d' % i, 0.036, debris_m, 1) for i in range(8)]
+    fx['rim'] = [ico('rim%d' % i, 0.011, spark_m, 1) for i in range(RIM_N)]
+    for nm_, en in (('hit', 500.0), ('rim', 140.0)):
+        ld = bpy.data.lights.new(nm_ + 'L', 'POINT'); ld.energy = en; ld.color = (1.0, 0.65, 0.3); ld.shadow_soft_size = 0.1
+        fx[nm_ + '_light'] = Rm.link(bpy.data.objects.new(nm_ + 'L', ld)); fx[nm_ + '_light'].hide_render = True
     fx['casings_list'] = casings(Rm, rd)
     # スキッド跡: 後輪の接地点の軌跡(滑り始めから)。 細い四角を並べ、通った時刻から見えるようにする
     segs = []
@@ -146,6 +188,11 @@ def build(Rm, rd):
         p = m @ Vector((r.uniform(-0.1, 0.1), -0.60, 0.15))
         fx['smoke_emit'].append({'t': te, 'p': p, 'seed': int(r.randint(1 << 30)), 'w': r.uniform(-1, 1)})
         te += SMOKE_EVERY
+    r2 = _rng(5)
+    for i in range(10):                                                # パンクの煙(Aの後輪から、小さめ)
+        te = SQ.HIT_T + 0.02 + 0.06 * i
+        fx['smoke_emit'].append({'t': te, 'p': a_rear_contact(Rm, te, (r2.uniform(-0.05, 0.05), -0.60, 0.25)), 'seed': int(r2.randint(1 << 30)), 'w': r2.uniform(-1, 1), 'k': 0.55})
+    fx['smoke_emit'].sort(key=lambda e: e['t'])
     print('fx: impacts %d, skid segs %d, smoke puffs %d' % (len(fx['impacts']), len(segs), len(fx['smoke_emit'])))
     return fx
 
@@ -183,6 +230,11 @@ def _key_vis(o, j, vis, loc=None, scale=None, color=None):
         o.scale = scale; o.keyframe_insert('scale', frame=j)
     if vis and color is not None:
         o.color = color; o.keyframe_insert('color', frame=j)
+
+
+def a_rear_contact_cache(fx, tau):
+    r = fx['rim']
+    return fx['hit']['rim'][min(len(fx['hit']['rim']) - 1, max(0, int((tau - fx['hit']['t']) * 55.0)))]['p']
 
 
 def key(fx, j, tau, gun_world_fn):
@@ -235,11 +287,34 @@ def key(fx, j, tau, gun_world_fn):
             e, age = live[s]; u = age / SMOKE_LIFE
             r = _rng(e['seed']); dr = Vector((r.uniform(-0.4, 0.4) + 0.9 * e['w'], r.uniform(-0.6, 0.2), 0.0))
             p = e['p'] + Vector((0, 0, 0.35 + 0.5 * age)) + dr * age
-            rad = 0.32 + 1.35 * math.sqrt(u)
+            rad = (0.32 + 1.35 * math.sqrt(u)) * e.get('k', 1.0)
             a = min(1.0, age / 0.12) * (1 - u) ** 1.4
             _key_vis(o, j, True, loc=p, scale=(rad, rad, rad * 0.8), color=(1, 1, 1, a))
         else:
             _key_vis(o, j, False)
+    # Aの後輪に命中: 火花・ゴムの破片・光、その後はリムが路面をこする火花
+    h = fx['hit']; age = tau - h['t']
+    for i, o in enumerate(fx['hit_spark']):
+        _key_vis(o, j, 0 <= age < 0.30, loc=ballistic(h['p'], h['sparks'][i], max(age, 0.0), 2.5) if 0 <= age < 0.30 else None)
+    for i, o in enumerate(fx['hit_rubber']):
+        _key_vis(o, j, 0 <= age < 1.0, loc=ballistic(h['p'], h['rubber'][i], max(age, 0.0), 1.2) if 0 <= age < 1.0 else None)
+    _key_vis(fx['hit_light'], j, 0 <= age < 0.10, loc=h['p'] + Vector((-0.2, 0, 0.1)))
+    live = {}
+    for n, e in enumerate(h['rim']):
+        ag = tau - e['t']
+        if 0 <= ag < 0.22:
+            live[n % RIM_N] = (e, ag)
+    for s, o in enumerate(fx['rim']):
+        if s in live:
+            e, ag = live[s]
+            _key_vis(o, j, True, loc=ballistic(e['p'], e['v'], ag, 5.0))
+        else:
+            _key_vis(o, j, False)
+    ra = h['rim']
+    cur = None
+    if ra and h['t'] <= tau < ra[-1]['t']:
+        cur = a_rear_contact_cache(fx, tau)
+    _key_vis(fx['rim_light'], j, cur is not None, loc=cur + Vector((0, 0, 0.15)) if cur is not None else None)
     # スキッド跡
     for t0, o in fx['skid']:
         _key_vis(o, j, tau >= t0)

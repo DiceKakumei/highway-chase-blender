@@ -12,13 +12,12 @@ TOFF = 30.0
 DUR = 15.0
 TWO_PI = 2 * math.pi
 DT = 1.0 / 240
-CUTS = [2.0, 3.5, 5.0, 6.5, 8.0, 9.5, 10.8, 11.6, 12.3, 14.0]          # 11 カット(τ)
+CUTS = [2.0, 3.5, 5.0, 6.5, 8.0, 9.5, 10.3, 11.3, 12.3, 14.0]          # 11 カット(τ)
 Z0A = -46.0 * TOFF - 30.0                                              # 前作の t=30 でのAの位置(three.js z)
 SLIDE_T0 = 12.2                                                        # Bが後輪をロックして滑り始める
 SLIDE_DUR = 2.7                                                        # 滑って止まるまで
 YAW_SLIDE = math.radians(86.0)
 ROLL_SLIDE = -0.30                                                     # 横滑り中の傾き(進行方向と逆へ、上が倒れる)。ブレンダーのロールは + = 右へ
-A_BRAKE_T0 = 12.3
 
 # ---- 速度(m/s)と車線 ---------------------------------------------------------------------------------
 VA_KEYS = [[0, 46.0], [6.5, 46.0], [10.0, 28.0], [20, 28.0]]
@@ -29,7 +28,7 @@ LANE_B_S = [[0, -1.8], [11.0, -1.8], [12.3, 1.0], [20, 1.0]]
 # ---- 銃の動き(τ) ----------------------------------------------------------------------------------
 T_GRIP_LEAVE, T_CHEST, T_DRAWN = 1.0, 1.9, 2.6            # 右手: ハンドル → 上着の内側 → 銃を抜いて構える
 T_HOLSTER0, T_HOLSTER1, T_REGRIP = 10.8, 11.4, 11.9      # 構え → しまう → ハンドルへ戻す
-BURSTS = [(5.2, 5.9), (6.4, 7.1), (7.7, 8.4), (8.8, 9.6), (9.9, 10.5)]
+BURSTS = [(5.2, 5.9), (6.4, 7.1), (7.7, 8.4), (8.8, 9.6), (9.9, 10.5)]      # 最後の1発がAの後輪に当たる
 FIRE_EVERY = 3.0 / FPS                                    # 8発/秒
 
 
@@ -43,6 +42,9 @@ def fire_times():
 
 
 FIRES = fire_times()
+HIT_T = FIRES[-1]                                         # 最後の1発 = Aの後輪(タイヤ)に命中。パンクして、ふらつきながら減速する
+A_BRAKE_T0 = HIT_T + 0.25
+A_DECEL_G = 0.68
 
 
 def gun_state(tau):
@@ -71,7 +73,7 @@ TS = np.arange(-1.0, 16.5, DT)
 
 def _speed_tables():
     vA = np.array([keyed_sm(VA_KEYS, t) for t in TS])
-    ab = 0.95 * G * np.array([sm((t - A_BRAKE_T0) / 0.2) for t in TS])        # Aの急ブレーキ
+    ab = A_DECEL_G * G * np.array([sm((t - A_BRAKE_T0) / 0.2) for t in TS])        # Aの急ブレーキ
     vA = vA.copy()
     v = 0.0
     out = np.empty_like(vA); cur = None
@@ -108,6 +110,9 @@ def tables(bid):
     ph = NZ[bid]['ph']
     drift = 0.030 * np.sin(TWO_PI * 0.35 * TS + ph[0]) + 0.018 * np.sin(TWO_PI * 0.61 * TS + ph[1])
     xp = np.array([keyed_sm(keys, t) for t in TS]) + drift
+    if bid == 'A':                                                 # 後輪がパンク: 蛇行(ふらつき)して減速
+        k0 = np.clip(TS - HIT_T, 0, None)
+        xp = xp + 0.40 * np.exp(-k0 / 1.3) * np.sin(TWO_PI * 1.25 * k0) * (TS > HIT_T) * np.clip(k0 / 0.15, 0, 1)
     h = 5
     ax = (np.roll(xp, -h) - 2 * xp + np.roll(xp, h)) / (h * DT) ** 2
     ax[:h] = 0; ax[-h:] = 0
@@ -150,6 +155,8 @@ def tables(bid):
     for bt in (3.1, 7.3, 11.0, 14.1):
         uf += BUMP_AMP * np.exp(-(((TS - (bt + (0.4 if bid == 'B' else 0.0))) / 0.05) ** 2))
     ur = _shift(uf, -WB / 40.0)
+    if bid == 'A':
+        ur = ur - 0.035 * np.array([sm((t - HIT_T) / 0.15) for t in TS])      # 後輪が潰れて、尻が下がる
     out = {'ts': TS, 'x': xp, 'z': z, 'v': v, 'phi': phi, 'steer': steer, 'rho': rho, 'head_roll': head_roll, 'head_yaw': head_yaw,
            'slide': slide, 'roll_s': roll_s, 'dist': -z, 'dist_r': dist_r + (-z[0]), 'heading': heading, 'dive': dive}
     for kk, uu in (('f', uf), ('r', ur)):
@@ -231,8 +238,8 @@ def shot_at(t, k=None):
         p = [mx + 3.6, 3.6, mz - 11]; l = [mx, 0.9, mz]; fov = 40; roll = 0.04
     elif k == 6:     # 7 俯瞰
         p = [mx, 17.0, mz + 4]; l = [mx, 0.0, mz - 1.5]; fov = 50
-    elif k == 7:     # 8 銃(弾切れ → しまう)
-        p = [bx + 1.1, 1.3, bz - 0.55]; l = [bx + 0.18, 1.18, bz - 0.3]; fov = 30
+    elif k == 7:     # 8 Aの後輪に命中(パンク、ふらつく)。路面近くの後ろ斜めから
+        p = [ax - 1.3, 0.42, az + 3.3]; l = [ax, 0.32, az + 0.55]; fov = 34
     elif k == 8:     # 9 路肩側から低く、追い越し
         p = [mx + 7.5, 0.6, mz]; l = [mx, 0.95, mz]; fov = 40
     elif k == 9:     # 10 路面すれすれ(世界に固定)。Bが近づいて滑る

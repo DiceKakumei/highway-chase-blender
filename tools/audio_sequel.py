@@ -102,10 +102,17 @@ sq = F.svf(nz, fc, 2.2, 'bp') * np.clip(sv * 1.6, 0, 1) ** 0.7 * (1 + .35 * np.s
 whine = O.sine(600 + 1100 * sv) * .10 * sv ** 1.2 * (1 + .5 * np.sin(2 * np.pi * 6.2 * ts_))
 att = np.clip(ts_ / 0.06, 0, 1)
 S(norm((sq + whine) * att), at=SLIDE, gain=-8, pan=0.0)
-# Aのブレーキ(小さめのキーッ)
-ta = T(2.4); sa = np.interp(ta + SQ.A_BRAKE_T0, tt, vA) / 28.0
-sqa = F.svf(np.random.default_rng(78).standard_normal(len(ta)), 1500 + 2200 * sa, 2.0, 'bp') * np.clip(sa * 1.4, 0, 1) ** 0.8 * np.clip(ta / 0.08, 0, 1)
-S(norm(sqa), at=SQ.A_BRAKE_T0, gain=-14, pan=0.35)
+# Aの後輪に命中: バーストの音(重い破裂 + シュー)と、リムが路面をこする金属音(速度に追従)
+HIT = SQ.HIT_T
+u = T(0.9); r_ = np.random.default_rng(91)
+burst = np.tanh(2.0 * (F.lpf(r_.standard_normal(len(u)), 1400) * np.exp(-u / 0.05) + O.sine(np.full(len(u), 60.0) + 90 * np.exp(-u * 30)) * np.exp(-u / 0.10)))
+hiss = F.bpf(r_.standard_normal(len(u)), 5000, 11000) * np.exp(-u / 0.35) * 0.35
+S(norm(burst + hiss), at=HIT + 0.01, gain=-6, pan=-0.2)
+tr = T(2.5); sa = np.interp(tr + HIT, tt, vA) / 28.0
+nzr = np.random.default_rng(92).standard_normal(len(tr))
+grind = F.svf(nzr, 3000 + 3500 * sa, 1.8, 'bp') * (0.6 + 0.4 * np.sin(2 * np.pi * 52 * tr)) * np.clip(sa * 1.6, 0, 1) ** 0.7 * np.clip(tr / 0.04, 0, 1)
+grind = grind + 0.25 * O.saw(np.full(len(tr), 180.0) * (0.6 + 0.6 * sa)) * np.clip(sa * 1.5, 0, 1) * np.clip(tr / 0.06, 0, 1)
+S(norm(grind), at=HIT, gain=-10, pan=-0.3)
 # 止まった瞬間の低い余韻と、風
 S(sfx.boom(1.6, f0=42.0), at=SLIDE + SQ.SLIDE_DUR - 0.1, gain=-12)
 wind = F.lpf(np.random.default_rng(79).standard_normal(len(tt)), 900) * np.interp(tt, [0, 12, 14.5, 15], [.0, .0, .25, .12])
