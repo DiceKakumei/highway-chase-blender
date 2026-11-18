@@ -61,6 +61,7 @@ P = {
     'pool_emit': 2.2,        # 地上の街灯の光だまり
     'street_car_emit': 25.0, # 地上の車のライト
     'dbg_truck': None,       # 確認用カメラ(主役のトラック基準)
+    'dbg_idx': None,         # 確認用カメラの対象(S['cars'] の番号。None = 主役のトラック)
 }
 
 Y0, Y1 = -300.0, 2700.0          # road extent (three.js Z0=300 .. Z1=-2700)
@@ -627,9 +628,33 @@ def roof_material():
 # ------------------------------------------------------------------------------------------------
 # vehicles
 # ------------------------------------------------------------------------------------------------
+def smooth_mesh(me, angle_deg=62.0, weld=2e-5):
+    """Meshy のメッシュは、UVの継ぎ目で頂点が分かれていて、継ぎ目ごとに陰影の段差(三角形の切れ目)が出る。
+    位置が同じ頂点をつなぎ直し、全面をなめらかにして、角度が大きい辺だけ硬い辺にする。"""
+    bm = bmesh.new(); bm.from_mesh(me)
+    n0 = len(bm.verts)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=weld)
+    lim = math.radians(angle_deg)
+    for e in bm.edges:
+        e.smooth = True
+        if len(e.link_faces) == 2:
+            try:
+                if e.calc_face_angle() > lim:
+                    e.smooth = False
+            except ValueError:
+                pass
+    for f in bm.faces:
+        f.smooth = True
+    bm.to_mesh(me); bm.free(); me.update()
+    print('   smooth_mesh: verts %d -> %d, faces %d' % (n0, len(me.vertices), len(me.polygons)))
+
+
 def import_glb(path):
     before = set(bpy.data.objects)
-    bpy.ops.import_scene.gltf(filepath=path)
+    try:
+        bpy.ops.import_scene.gltf(filepath=path, import_shading='SMOOTH')
+    except TypeError:
+        bpy.ops.import_scene.gltf(filepath=path)
     new = [o for o in bpy.data.objects if o not in before]
     bpy.context.view_layer.update()
     meshes = [o for o in new if o.type == 'MESH']
@@ -644,6 +669,7 @@ def import_glb(path):
     if len(meshes) != 1:
         print('WARNING: %s has %d mesh objects; using the largest' % (path, len(meshes)))
         meshes.sort(key=lambda o: -len(o.data.vertices))
+    smooth_mesh(meshes[0].data)
     return meshes[0]
 
 
@@ -875,7 +901,7 @@ def instance(proto, tag, color=(1, 1, 1, 0.5), head_light=True):
         import cab, zlib
         h = zlib.crc32(tag.encode()) % 1000 / 1000.0
         period = 3.6 + 2.4 * ((h * 7.0) % 1.0)
-        out['wipers'] = cab.add_to_truck(sys.modules[__name__], root)
+        out['wipers'] = cab.add_to_truck(sys.modules[__name__], root, cab.BOX_TINTS[zlib.crc32(tag.encode()) % len(cab.BOX_TINTS)])
         out['wiper_phase'] = h * period; out['wiper_period'] = period
     if is_bike:
         out.update({'frame': fr, 'steer': steer, 'rig': make_rig(tag, root, body, proto)})
@@ -908,6 +934,7 @@ def build_vehicles():
         cars.append(inst)
     S['cars'] = cars
     print('vehicles:', len(cars) + 2)
+    print('VEHLIST ' + ' '.join('%d:%s%s' % (i, c['proto']['name'][4:], 'R' if c['c']['dir'] > 0 else '') for i, c in enumerate(cars[:40])))
     return S
 
 
@@ -996,7 +1023,7 @@ def apply_frame(S, cam, f, blur):
                     key(w, j, rot=(0, 0, ang))
         m, fov = camera_matrix(tt, k)
         if P.get('dbg_truck'):      # 確認用: 主役のトラックを基準にしたカメラ [位置xyz, 見る先xyz, fov](ブレンダー座標、トラックの原点から)
-            hero = next(c for c in S['cars'] if c['c'].get('hero'))
+            hero = S['cars'][P['dbg_idx']] if P.get('dbg_idx') is not None else next(c for c in S['cars'] if c['c'].get('hero'))
             tl = Vector((hero['c']['x'], -M.pos_of(hero['c'], tt), 0.0)); dd = P['dbg_truck']
             if isinstance(dd[0], list):
                 dd = dd[P.get("_f", 0) % len(dd)]

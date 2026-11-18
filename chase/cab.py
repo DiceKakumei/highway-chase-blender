@@ -204,6 +204,59 @@ def build_wiper():
     return a
 
 
+# ---- 荷台(きれいな箱) ---------------------------------------------------------------------------
+# 元の荷台の壁は、大きな三角形が少数(1壁 約100枚)で、折れ目が三角形のまま見えていた。平らな箱に置き換える。
+BOX = dict(x0=-1.062, x1=1.062, y0=-3.445, y1=1.95, z0=0.94, z1=2.945)
+BOX_TINTS = [(0.93, 0.93, 0.93), (0.80, 0.86, 0.95), (0.96, 0.94, 0.84), (0.72, 0.74, 0.76), (0.90, 0.92, 0.93), (0.80, 0.92, 0.84), (0.92, 0.84, 0.80), (0.95, 0.95, 0.95)]
+
+
+def build_box():
+    b = BOX
+    a = Acc()
+    x0, x1, y0, y1, z0, z1 = b['x0'], b['x1'], b['y0'], b['y1'], b['z0'], b['z1']
+    V = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0), (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)]
+    a.add(V, [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (2, 3, 7, 6), (1, 2, 6, 5), (3, 0, 4, 7)], 0)
+    return a
+
+
+def box_material(R):
+    mat, nt, out = R.new_material('TruckBox')
+    bsdf = R.principled(nt, out)
+    b = BOX
+    pos = nt.nodes.new('ShaderNodeTexCoord').outputs['Object']
+    sp = nt.nodes.new('ShaderNodeSeparateXYZ'); nt.links.new(pos, sp.inputs[0])
+    x, y, z = sp.outputs['X'], sp.outputs['Y'], sp.outputs['Z']
+    M = R.math_node
+
+    def edist(v, a0, a1):
+        return M(nt, 'MINIMUM', M(nt, 'ABSOLUTE', M(nt, 'SUBTRACT', v, a0)), M(nt, 'ABSOLUTE', M(nt, 'SUBTRACT', v, a1)))
+    dx, dy, dz = edist(x, b['x0'], b['x1']), edist(y, b['y0'], b['y1']), edist(z, b['z0'], b['z1'])
+    ex, ey, ez = R.smooth(nt, dx, 0.045, 0.012), R.smooth(nt, dy, 0.045, 0.012), R.smooth(nt, dz, 0.045, 0.012)
+    corner = M(nt, 'ADD', M(nt, 'ADD', M(nt, 'MULTIPLY', ex, ey), M(nt, 'MULTIPLY', ex, ez)), M(nt, 'MULTIPLY', ey, ez), clamp=True)
+    side = R.smooth(nt, dx, 0.012, 0.004)
+    u = M(nt, 'FRACT', M(nt, 'DIVIDE', M(nt, 'SUBTRACT', y, b['y0']), 0.9))
+    dist = M(nt, 'MULTIPLY', M(nt, 'MINIMUM', u, M(nt, 'SUBTRACT', 1.0, u)), 0.9)
+    rib = M(nt, 'MULTIPLY', R.smooth(nt, dist, 0.010, 0.004), side)
+    rear = R.smooth(nt, M(nt, 'ABSOLUTE', M(nt, 'SUBTRACT', y, b['y0'])), 0.012, 0.004)
+    dline = M(nt, 'MULTIPLY', R.smooth(nt, M(nt, 'ABSOLUTE', x), 0.010, 0.004), rear)
+    skirt = R.smooth(nt, z, 1.16, 1.08)
+    dirt = M(nt, 'MULTIPLY', R.smooth(nt, z, 1.9, 1.0), 0.20)
+    nz = R.noise(nt, pos, 2.2, 3.0, 0.55)
+    f = M(nt, 'SUBTRACT', 1.0, M(nt, 'ADD', M(nt, 'ADD', M(nt, 'MULTIPLY', rib, 0.14), M(nt, 'MULTIPLY', dline, 0.20)),
+                                  M(nt, 'ADD', M(nt, 'ADD', M(nt, 'MULTIPLY', corner, 0.20), dirt), M(nt, 'MULTIPLY', skirt, 0.55))), clamp=True)
+    f = M(nt, 'MULTIPLY', f, M(nt, 'ADD', 0.94, M(nt, 'MULTIPLY', nz, 0.10)))
+    oi = nt.nodes.new('ShaderNodeObjectInfo')
+    col = R.vmath(nt, 'SCALE', oi.outputs['Color'], scale=M(nt, 'MULTIPLY', f, 0.80))
+    nt.links.new(col, bsdf.inputs['Base Color'])
+    nt.links.new(M(nt, 'ADD', 0.46, M(nt, 'MULTIPLY', skirt, 0.25)), bsdf.inputs['Roughness'])
+    try:
+        bsdf.inputs['Coat Weight'].default_value = 0.12; bsdf.inputs['Coat Roughness'].default_value = 0.2
+    except Exception:
+        pass
+    R.add_fog(mat)
+    return mat
+
+
 # ---- 焼き込みワイパーの面を消す ------------------------------------------------------------------
 def strip_faces(me, npz_path, keys, label):
     """面の中心の位置(npz)に一致する面を消す(元のメッシュに焼き込まれた白いガラス板・ワイパー)"""
@@ -228,6 +281,7 @@ def strip_baked(me, d):
     import os
     strip_faces(me, os.path.join(d, 'wiper_faces.npz'), ['L', 'R'], 'baked wiper')
     strip_faces(me, os.path.join(d, 'glass_faces.npz'), ['G'], 'baked glass')
+    strip_faces(me, os.path.join(d, 'box_faces.npz'), ['B'], 'cargo-box wall (replaced by a clean box)')
 
 
 # ---- Blender への組み込み ----------------------------------------------------------------------------
@@ -251,12 +305,15 @@ def shared(R):
     _shared['glass'] = mk('Cab_glass', build_glass(), [glass_material(R)])
     blk = R.simple_material('Wiper_black', (0.012, 0.012, 0.014), 0.35)
     _shared['wiper'] = mk('Cab_wiper', build_wiper(), [blk])
+    _shared['box'] = mk('Cargo_box', build_box(), [box_material(R)])
     return _shared
 
 
-def add_to_truck(R, root, proto_name='veh_truck'):
-    """トラック1台に、内装・ガラス・ワイパー2本を付ける。-> ワイパーの(物体, 位相)のリスト"""
+def add_to_truck(R, root, tint=(0.93, 0.93, 0.93)):
+    """トラック1台に、荷台・内装・ガラス・ワイパー2本を付ける。-> ワイパーの物体のリスト"""
     sh = shared(R)
+    bx = R.link(bpy.data.objects.new(root.name + '_box', sh['box']), root)
+    bx.color = (*tint, 1.0)
     R.link(bpy.data.objects.new(root.name + '_cab', sh['interior']), root)
     R.link(bpy.data.objects.new(root.name + '_glass', sh['glass']), root)
     Z = np.cross(E1, E2)                                                                              # 内向き(右手系にするため)
