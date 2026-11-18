@@ -52,6 +52,11 @@ P = {
     'glass_wobble': 0.03,    # ガラス1枚ごとの傾き
     'obs_emit': 60.0,        # 航空障害灯
     'reflect_emit': 4.0,     # ガードレールの反射板
+    # 街(2026-11-18 v3: 実在の街の配置 + 凹凸)
+    'relief_dist': 110.0,    # 高架からこの距離までのビルは、凹凸を形で作る
+    'relief_zcut': -4.0,     # これより下の階は平らのまま(高架から見えない)
+    'street_emit': 60.0,     # 地上の街灯
+    'pool_emit': 0.6,        # 地上の街灯の光だまり
 }
 
 Y0, Y1 = -300.0, 2700.0          # road extent (three.js Z0=300 .. Z1=-2700)
@@ -615,128 +620,6 @@ def roof_material():
     return mat
 
 
-class City:
-    """ビルの箱を1つのメッシュにためる。壁 = 外壁素材(UVはメートル)、上面 = 屋上。"""
-    def __init__(self):
-        self.V = []; self.F = []; self.UV = []; self.FM = []; self.A = []; self.B = []
-
-    def box(self, x0, x1, y0, y1, z0, z1, wall, top, a, b2, u0=0.0, vbase=0.0):
-        V, F, UV, FM = self.V, self.F, self.UV, self.FM
-        n = len(V)
-        V.extend([(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0), (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)])
-        u = u0
-        for (i0, i1), wlen in (((0, 1), x1 - x0), ((1, 2), y1 - y0), ((2, 3), x1 - x0), ((3, 0), y1 - y0)):
-            F.append((n + i0, n + i1, n + i1 + 4, n + i0 + 4)); FM.append(wall)
-            UV.extend([(u, z0 - vbase), (u + wlen, z0 - vbase), (u + wlen, z1 - vbase), (u, z1 - vbase)]); u += wlen
-        F.append((n + 4, n + 5, n + 6, n + 7)); FM.append(top); UV.extend([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
-        self.A.extend([a] * 20); self.B.extend([b2] * 20)
-
-    def obj(self, name, mats):
-        o = mesh_object(name, self.V, self.F, mats=mats, uvs=self.UV, face_mat=self.FM)
-        for nm, data in (('bld', self.A), ('bld2', self.B)):
-            ca = o.data.color_attributes.new(nm, 'FLOAT_COLOR', 'CORNER')
-            ca.data.foreach_set('color', np.asarray(data, dtype=np.float32).ravel())
-        return o
-
-
-def build_city():
-    gz = P['ground_z']
-    keys = list(FACADES.keys())
-    mats = [facade_material(k) for k in keys]
-    MI = {k: i for i, k in enumerate(keys)}
-    PLAIN, ROOF, METAL, OBS = len(mats), len(mats) + 1, len(mats) + 2, len(mats) + 3
-    mats += [plain_wall_material(), roof_material(), simple_material('RoofMetal', (0.34, 0.35, 0.36), rough=0.5, metallic=0.85),
-             emission_material('ObsLight', (1.0, 0.06, 0.03), P['obs_emit'])]
-    C = City()
-    TALL = ['f013', 'f007', 'f009', 'f001', 'f006', 'f013', 'f007']
-    MID = ['f017', 'f009', 'f006', 'f019', 'f018', 'f001', 'f017']
-    LOW = ['f018', 'f019', 'f020', 'f017', 'f018', 'f020']
-
-    def roof_stuff(rr, x0, x1, y0, y1, zt, a, b2, near, total_h):
-        w, d = x1 - x0, y1 - y0
-        ph, pt = 1.0, 0.35                                     # 立ち上がり(パラペット)
-        for (px0, px1, py0, py1) in ((x0, x1, y0, y0 + pt), (x0, x1, y1 - pt, y1), (x0, x0 + pt, y0 + pt, y1 - pt), (x1 - pt, x1, y0 + pt, y1 - pt)):
-            C.box(px0, px1, py0, py1, zt, zt + ph, PLAIN, PLAIN, a, b2)
-        if rr() < 0.8 and w > 8 and d > 8:                     # 塔屋(エレベーター機械室)
-            pw, pd, phh = w * (0.25 + rr() * 0.25), d * (0.25 + rr() * 0.25), 3.0 + rr() * 3.0
-            cx = x0 + pt + pw / 2 + rr() * (w - 2 * pt - pw); cy = y0 + pt + pd / 2 + rr() * (d - 2 * pt - pd)
-            C.box(cx - pw / 2, cx + pw / 2, cy - pd / 2, cy + pd / 2, zt, zt + phh, PLAIN, ROOF, a, b2, u0=rr() * 20)
-        if near:                                               # 室外機の列
-            nu = 2 + int(rr() * 6); ux = x0 + 1.5 + rr() * max(0.5, w - 3 - nu * 2.2); uy = y0 + 1.5 + rr() * max(0.5, d - 4.0)
-            for k in range(nu):
-                if ux + k * 2.2 + 1.6 < x1 - 1.0:
-                    C.box(ux + k * 2.2, ux + k * 2.2 + 1.6, uy, uy + 1.0, zt, zt + 1.5, METAL, METAL, a, b2)
-        if total_h > 110 and rr() < 0.55:                      # アンテナ
-            mh = 10 + rr() * 16; mx = x0 + w * (0.3 + rr() * 0.4); my = y0 + d * (0.3 + rr() * 0.4)
-            C.box(mx - 0.2, mx + 0.2, my - 0.2, my + 0.2, zt, zt + mh, METAL, METAL, a, b2)
-            C.box(mx - 0.3, mx + 0.3, my - 0.3, my + 0.3, zt + mh, zt + mh + 0.6, OBS, OBS, a, b2)
-        if total_h >= 60:                                      # 航空障害灯(赤)
-            for (lx, ly) in ((x0 + 0.2, y0 + 0.2), (x1 - 0.2, y0 + 0.2), (x1 - 0.2, y1 - 0.2), (x0 + 0.2, y1 - 0.2)):
-                C.box(lx - 0.3, lx + 0.3, ly - 0.3, ly + 0.3, zt + ph, zt + ph + 0.6, OBS, OBS, a, b2)
-
-    def building(i, bx, by, bw, bh, bd, cls):
-        rr = M.rng(9100 + i)
-        H = bh - gz
-        if cls == 'low':
-            key = LOW[int(rr() * len(LOW))] if rr() < 0.85 else None
-        elif H > 105 or cls == 'far':
-            key = TALL[int(rr() * len(TALL))]
-        elif H > 55:
-            key = MID[int(rr() * len(MID))]
-        else:
-            key = LOW[int(rr() * len(LOW))]
-        wall = MI[key] if key else PLAIN
-        a = (rr(), 0.2 + 0.75 * rr(), rr(), 1.0); b2 = (rr(), rr(), rr(), 1.0)
-        u0 = rr() * 300.0
-        near = abs(bx) < 150 and cls != 'far'
-        x0, x1, y0, y1 = bx - bw / 2, bx + bw / 2, by - bd / 2, by + bd / 2
-        z0 = gz
-        if cls == 'main' and H > 80 and rr() < 0.45:           # 低層部(基壇)の上に塔
-            pz = 8.0 + rr() * 14.0; f = 0.58
-            pk = MI[MID[int(rr() * len(MID))]]
-            a2 = (rr(), 0.3 + 0.6 * rr(), rr(), 1.0)
-            C.box(bx - bw * f, bx + bw * f, by - bd * f, by + bd * f, gz, pz, pk, ROOF, a2, b2, u0=rr() * 300, vbase=gz)
-            z0 = pz
-        zt = bh
-        if cls != 'low' and H > 60 and rr() < 0.35:            # 頂部を一段しぼる
-            zc = z0 + (bh - z0) * (0.82 + rr() * 0.08); s = 0.62 + rr() * 0.16
-            C.box(x0, x1, y0, y1, z0, zc, wall, ROOF, a, b2, u0=u0, vbase=gz)
-            x0, x1, y0, y1 = bx - bw * s / 2, bx + bw * s / 2, by - bd * s / 2, by + bd * s / 2
-            C.box(x0, x1, y0, y1, zc, zt, wall, ROOF, a, b2, u0=u0 + 7.0, vbase=gz)
-        else:
-            C.box(x0, x1, y0, y1, z0, zt, wall, ROOF, a, b2, u0=u0, vbase=gz)
-        if cls != 'far' or H > 120:
-            roof_stuff(rr, x0, x1, y0, y1, zt, a, b2, near, H)
-
-    r = M.rng(77); i = 0
-    for _ in range(150):                                   # scene.js と同じ並び
-        side = -1 if r() < 0.5 else 1
-        bx = side * (45 + r() * 220); bz = 300 - r() * (3000 + 200); bw = 10 + r() * 26; bh = 22 + r() * 110 * (0.4 + r()); bd = 10 + r() * 24
-        building(i, bx, -bz, bw, bh, bd, 'main'); i += 1
-    for _ in range(90):                                    # far skyline against the afterglow
-        bx = (r() - 0.5) * 900; bz = -2700 - 120 - r() * 500; bw = 20 + r() * 40; bh = 40 + r() * 200; bd = 20 + r() * 30
-        building(i, bx, -bz, bw, bh, bd, 'far'); i += 1
-    r2 = M.rng(4242)
-    for _ in range(420):                                   # lower blocks close to the viaduct (roadside parallax)
-        side = -1 if r2() < 0.5 else 1
-        bx = (36 if side > 0 else -50) * 1.0 + side * r2() * 150; by = -350 + r2() * 3300; bw = 12 + r2() * 30; bd = 12 + r2() * 30; bh = -4 + r2() * 26
-        building(i, bx, by, bw, bh, bd, 'low'); i += 1
-    C.obj('Buildings', mats)
-
-    ground = simple_material('CityGround', (0.02, 0.02, 0.022), rough=0.9)
-    g = Geo(); g.hquad(-1500, 1500, -1200, 4200, gz); g.obj('Ground', ground)
-    # street-level lights below the viaduct
-    g = Geo(); r3 = M.rng(99)
-    for _ in range(2600):
-        x = (r3() - 0.5) * 900; y = -400 + r3() * 3400
-        if -26 < x < 13:
-            continue
-        s = 0.5 + r3() * 0.9
-        g.hquad(x - s, x + s, y - s, y + s, gz + 0.3 + r3() * 6)
-    g.obj('CityLights', emission_material('CityLight', (1.0, 0.70, 0.40), P['city_emit']))
-    print('buildings:', i, 'faces:', len(C.F))
-
-
 # ------------------------------------------------------------------------------------------------
 # vehicles
 # ------------------------------------------------------------------------------------------------
@@ -1080,7 +963,9 @@ def main():
     T0 = time.time()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     setup_render(int(a['samples']), w, h)
-    build_world(); build_road(); build_city()
+    build_world(); build_road()
+    import city
+    city.build(sys.modules[__name__])
     S = build_vehicles()
     camd = bpy.data.cameras.new('Cam'); camd.sensor_fit = 'VERTICAL'; camd.sensor_height = 24.0; camd.clip_start = 0.08; camd.clip_end = 9000
     cam = link(bpy.data.objects.new('Cam', camd)); bpy.context.scene.camera = cam
