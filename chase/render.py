@@ -711,6 +711,9 @@ def build_proto(name):
     co = co_array(me); lo, hi = co.min(0), co.max(0)
     body_me = me; body_me.name = name + '_body'
     bpy.data.objects.remove(ob)
+    if name == 'veh_truck':
+        import cab
+        cab.strip_baked_wipers(body_me, os.path.join(d, 'wiper_faces.npz'))
 
     # バイク+ライダーの疑似リグの重み(tools/make_rig_weights.py が作る)を、頂点の位置の最近傍で写す
     rigw = None
@@ -868,6 +871,12 @@ def instance(proto, tag, color=(1, 1, 1, 0.5), head_light=True):
         o = link(bpy.data.objects.new(tag + '_tail', light_data('tail')), fr if is_bike else root)
         o.location = (0, ty - 0.12, tz) if not is_bike else (Vector((0, ty - 0.12, tz)) - F)
     out = {'root': root, 'wheels': wheels, 'proto': proto}
+    if proto['name'] == 'veh_truck':
+        import cab, zlib
+        h = zlib.crc32(tag.encode()) % 1000 / 1000.0
+        period = 3.6 + 2.4 * ((h * 7.0) % 1.0)
+        out['wipers'] = cab.add_to_truck(sys.modules[__name__], root)
+        out['wiper_phase'] = h * period; out['wiper_period'] = period
     if is_bike:
         out.update({'frame': fr, 'steer': steer, 'rig': make_rig(tag, root, body, proto)})
     return out
@@ -980,6 +989,11 @@ def apply_frame(S, cam, f, blur):
             d = c['c']['v'] * tt
             for w, r in c['wheels']:
                 key(w, j, rot=(-d / r, 0, 0))
+            if c.get('wipers'):
+                import cab
+                ang = cab.wiper_angle(tt, c['wiper_phase'], c['wiper_period'])
+                for w in c['wipers']:
+                    key(w, j, rot=(0, 0, ang))
         m, fov = camera_matrix(tt, k)
         if P.get('dbg_truck'):      # 確認用: 主役のトラックを基準にしたカメラ [位置xyz, 見る先xyz, fov](ブレンダー座標、トラックの原点から)
             hero = next(c for c in S['cars'] if c['c'].get('hero'))
