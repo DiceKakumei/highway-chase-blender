@@ -145,7 +145,7 @@ def import_gun(R, d):
 
 def make_flash(R):
     """マズルフラッシュ(銃口から前へ伸びる光る星 + 点光源)。銃口の向き = +Y"""
-    mat = R.emission_material('MuzzleFlash', (1.0, 0.72, 0.30), 90.0)
+    mat = R.emission_material('MuzzleFlash', (1.0, 0.72, 0.30), 250.0)
     V, F = [], []
     def tri(a, b, c): n = len(V); V.extend([a, b, c]); F.append((n, n + 1, n + 2))
     seg = 8
