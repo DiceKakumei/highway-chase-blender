@@ -1170,6 +1170,12 @@ def main():
     T0 = time.time()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     setup_render(int(a['samples']), w, h)
+    if P['scene'] == 'sequel':                              # 煙(ボリューム)が重いので、サンプルの間隔を粗くする
+        for attr, val in (('volume_step_rate', 2.5), ('volume_max_steps', 128)):
+            try:
+                setattr(bpy.context.scene.cycles, attr, val)
+            except Exception as e:
+                print('cycles.%s: %s' % (attr, e))
     build_world(); build_road()
     import city
     city.build(sys.modules[__name__])

@@ -11,7 +11,7 @@ G = 9.81
 CASING_SLOTS, IMPACT_SLOTS, SMOKE_N = 10, 4, 64
 RIM_N = 30
 SPARKS_PER, DEBRIS_PER = 5, 3
-SMOKE_LIFE, SMOKE_EVERY = 2.0, 0.045
+SMOKE_LIFE, SMOKE_EVERY = 2.0, 0.075
 SKID_STEP = 0.05
 
 
@@ -206,7 +206,7 @@ def smoke_material(Rm):
     nt.links.new(tc.outputs['Object'], ln.inputs[0])
     fall = Rm.math_node(nt, 'SUBTRACT', 1.0, ln.outputs['Value'], clamp=True)
     fall = Rm.math_node(nt, 'POWER', fall, 1.6)
-    noi = nt.nodes.new('ShaderNodeTexNoise'); noi.inputs['Scale'].default_value = 1.3; noi.inputs['Detail'].default_value = 0.6
+    noi = nt.nodes.new('ShaderNodeTexNoise'); noi.inputs['Scale'].default_value = 1.0; noi.inputs['Detail'].default_value = 0.0
     nt.links.new(tc.outputs['Object'], noi.inputs['Vector'])
     nz = Rm.math_node(nt, 'ADD', Rm.math_node(nt, 'MULTIPLY', noi.outputs['Fac'], 0.9), 0.55)
     dens = Rm.math_node(nt, 'MULTIPLY', Rm.math_node(nt, 'MULTIPLY', fall, nz), oi.outputs['Alpha'])
@@ -291,7 +291,7 @@ def key(fx, j, tau, gun_world_fn):
             e, age = live[s]; u = age / SMOKE_LIFE
             r = _rng(e['seed']); dr = Vector((r.uniform(-0.4, 0.4) + 0.9 * e['w'], r.uniform(-0.6, 0.2), 0.0))
             p = e['p'] + Vector((0, 0, 0.35 + 0.5 * age)) + dr * age
-            rad = (0.32 + 1.35 * math.sqrt(u)) * e.get('k', 1.0)
+            rad = (0.40 + 1.70 * math.sqrt(u)) * e.get('k', 1.0)
             a = min(1.0, age / 0.12) * (1 - u) ** 1.4
             _key_vis(o, j, True, loc=p, scale=(rad, rad, rad * 0.8), color=(1, 1, 1, a))
         else:
