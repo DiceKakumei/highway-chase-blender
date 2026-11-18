@@ -1,6 +1,7 @@
 """高速チェイスの動き。three.js版 scene.js の移植(純関数。bpyは使わない)。
 座標は three.js のまま: x=右, y=上, z=手前(前進は -z)。Blender へは to_blender() で (x, -z, y)。"""
 import math
+import numpy as np
 
 V = 46.0
 FPS = 24
@@ -94,33 +95,129 @@ def vx(f, t):
     return (f(t + 0.05) - f(t - 0.05)) / 0.1
 
 
+# ---- riding dynamics (2026-11-18 v4) -----------------------------------------------------------------
+# 経路(車線変更)から「ハンドル(逆操舵) → 車体が傾く(リーン) → 向きが変わる(ヨー)」の順を作る。
+#  ・リーン = 横加速度 ax から atan(ax/g) × LEAN_K。速度ではなく加速度に比例(車線変更の真ん中=直進で傾き0)。
+#  ・リーンは経路より TAU 秒先に出す(傾けてから曲がる)。2次遅れでなめらかにし、傾く速さ(ロール角速度)に比例してハンドルを逆に切る。
+#  ・サスペンション: 車輪は常に路面(z=r)。車体だけが相対的に上下する(ジャンプしない)。
+#  ・ライダー: 胴体は車体より遅れて傾き(慣性)、頭は水平を保ち、進行方向を見る。
+G = 9.81
+RIDE_DT = 1.0 / 240
+RIDE_T0, RIDE_T1 = -1.0, 31.0
+WB = 1.4                # ホイールベース(m)
+LEAN_K, LEAN_MAX, TAU = 0.50, 0.55, 0.38
+W_LEAN = 7.0            # リーンの応答(rad/s)
+K_COUNTER, K_STEADY = 0.12, 0.05     # 逆操舵(ロール角速度1 rad/s あたり何rad)、定常の切り足し
+RHO_TIRE = 0.085        # タイヤの断面半径(傾くと接地点がずれて車輪の中心が下がる分)
+W_SUS = 2 * math.pi * 2.0   # サスの固有振動(rad/s)
+BUMP_AMP = 0.030        # 大きなバンプ(段差・補修跡)のとき、車体が車輪に対して動く大きさ(m)
 NZ = {'A': {'ph': [0.3, 1.7, 4.1, 2.2, 5.0, 0.9], 'bumps': [3.7, 7.4, 12.9, 18.3, 22.1, 27.0]},
       'B': {'ph': [2.1, 0.4, 3.3, 5.5, 1.2, 4.4], 'bumps': [4.9, 9.2, 14.1, 19.4, 23.0, 26.2]}}
+_RIDE = {}
+
+
+def _sos(u, w, z, dt=RIDE_DT):
+    """2次遅れ x'' + 2 z w x' + w^2 x = w^2 u  -> (x, dx/dt)"""
+    x = np.empty_like(u); v = np.empty_like(u)
+    xx = float(u[0]); vv = 0.0
+    for i in range(len(u)):
+        vv += (w * w * (u[i] - xx) - 2 * z * w * vv) * dt
+        xx += vv * dt
+        x[i] = xx; v[i] = vv
+    return x, v
+
+
+def _shift(a, sec):
+    """a(t + sec) (端は端の値)"""
+    n = int(round(sec / RIDE_DT))
+    if n == 0:
+        return a
+    out = np.empty_like(a)
+    if n > 0:
+        out[:-n] = a[n:]; out[-n:] = a[-1]
+    else:
+        out[-n:] = a[:n]; out[:-n] = a[0]
+    return out
+
+
+def _ride_tables(bid):
+    dt = RIDE_DT
+    ts = np.arange(RIDE_T0, RIDE_T1, dt)
+    fx = xA if bid == 'A' else xB
+    ph = NZ[bid]['ph']
+    drift = 0.030 * np.sin(TAU * 0.35 * ts + ph[0]) + 0.018 * np.sin(TAU * 0.61 * ts + ph[1])
+    xp = np.array([fx(t) for t in ts]) + drift
+    h = 5
+    ax = (np.roll(xp, -h) - 2 * xp + np.roll(xp, h)) / (h * dt) ** 2
+    ax[:h] = 0; ax[-h:] = 0
+    u = np.clip(LEAN_K * np.arctan(ax / G), -LEAN_MAX, LEAN_MAX)
+    lean, lean_rate = _sos(_shift(u, TAU), W_LEAN, 1.0)
+    wob = 0.010 * np.sin(TAU * 0.9 * ts + ph[2]) + 0.006 * np.sin(TAU * 1.9 * ts + ph[3])
+    wob_rate = TAU * 0.9 * 0.010 * np.cos(TAU * 0.9 * ts + ph[2]) + TAU * 1.9 * 0.006 * np.cos(TAU * 1.9 * ts + ph[3])
+    phi = lean + wob                                  # +は右に傾く(ブレンダーの Y 軸まわり)
+    phid = lean_rate + wob_rate
+    steer = K_COUNTER * phid - K_STEADY * phi         # +は左に切る(逆操舵: 右に傾けたいとき先に左へ)
+    vxp = (np.roll(xp, -h) - np.roll(xp, h)) / (2 * h * dt)
+    heading = -np.arctan(vxp / V)                     # +は左向き(ブレンダーの Z 軸まわり)
+    heading[:h] = 0; heading[-h:] = 0
+    # 胴体: 車体より遅れて傾く(慣性)。絶対の傾きは車体より少し内側へ
+    tor_abs, _ = _sos(1.10 * phi, 11.0, 0.75)
+    rho = 0.14 * np.tanh((tor_abs - phi) / 0.14)      # 胴体が車体に対して動く量は最大 約8度まで
+    head_abs, _ = _sos(0.30 * tor_abs, 10.0, 0.7)
+    head_roll = 0.12 * np.tanh((head_abs - tor_abs) / 0.12)
+    gaze, _ = _sos(_shift(heading, 0.45), 9.0, 0.8)
+    head_yaw = 0.75 * (gaze - heading)
+    # サスペンション: 路面の段差の列(30mごとの継手 + 大きなバンプ)に対する、車体と車輪の相対位置
+    t_ev = [bt for bt in NZ[bid]['bumps']]
+    uf = np.zeros_like(ts)
+    for n in range(-2, 60):
+        te = (30.0 * n + 7.0 * ph[4]) / V
+        uf += (0.0045 + 0.0020 * math.sin(n * 2.3 + ph[0])) * np.exp(-(((ts - te) / 0.035) ** 2))
+    for bt in t_ev:
+        uf += BUMP_AMP * np.exp(-(((ts - bt) / 0.05) ** 2))
+    ur = _shift(uf, -WB / V)
+    out = {'ts': ts, 'x': xp, 'drift': drift, 'phi': phi, 'steer': steer, 'rho': rho, 'head_roll': head_roll, 'head_yaw': head_yaw}
+    for k, uu in (('f', uf), ('r', ur)):
+        fz, _ = _sos(uu, W_SUS, 0.36)
+        out['rel_' + k] = fz - uu * 0.55           # 車体の上下(車輪に対して): 低域の応答 - 入力の一部(縮む)
+    heave = 0.5 * (out['rel_f'] + out['rel_r'])
+    out['heave'] = heave
+    out['fpitch'] = (out['rel_f'] - out['rel_r']) / WB
+    tz, _ = _sos(heave, 2 * math.pi * 1.7, 0.35)
+    out['tor_dz'] = tz - heave
+    tp, _ = _sos(out['fpitch'], 2 * math.pi * 1.7, 0.4)
+    out['tor_pitch'] = tp - out['fpitch']
+    return out
+
+
+def ride(bid, t):
+    tb = _RIDE.get(bid)
+    if tb is None:
+        tb = _RIDE[bid] = _ride_tables(bid)
+    ts = tb['ts']
+    r = {k: float(np.interp(t, ts, tb[k])) for k in ('x', 'drift', 'phi', 'steer', 'rho', 'head_roll', 'head_yaw', 'heave', 'fpitch', 'rel_f', 'rel_r', 'tor_dz', 'tor_pitch')}
+    return r
 
 
 def bike_noise(bid, t):
-    ph = NZ[bid]['ph']
-
-    def w(tt):
-        return 0.055 * math.sin(TAU * 1.25 * tt + ph[0]) + 0.035 * math.sin(TAU * 0.77 * tt + ph[1]) + 0.012 * math.sin(TAU * 2.3 * tt + ph[2])
-    dx = w(t)
-    vlat = (w(t + 0.04) - w(t - 0.04)) / 0.08
-    dy = 0.02 + 0.010 * math.sin(TAU * 2.05 * t + ph[3]) + 0.007 * math.sin(TAU * 2.64 * t + ph[4]) + 0.003 * math.sin(TAU * 13.1 * t + ph[5]) + 0.002 * math.sin(TAU * 17.7 * t + ph[0])
-    pitch = 0.006 * math.sin(TAU * 2.64 * t + ph[4] + 1.0)
-    for bt in NZ[bid]['bumps']:
-        e = math.exp(-(((t - bt) / 0.06) ** 2))
-        dy += 0.03 * e
-        pitch += 0.015 * e
-    return {'dx': dx, 'vlat': vlat, 'dy': dy, 'pitch': pitch}
+    """カメラが車体に付くカット用: 横ずれ、横速度、上下(=車体のばね上の動き)、ピッチ"""
+    r = ride(bid, t)
+    r2 = ride(bid, t + 0.04); r1 = ride(bid, t - 0.04)
+    return {'dx': r['drift'], 'vlat': (r2['drift'] - r1['drift']) / 0.08, 'dy': r['heave'], 'pitch': r['fpitch']}
 
 
 def bike_pose(bid, t):
-    """-> dict: x, y, z (three.js), yaw (about +y), pitch (about +x), roll (about +z, three.js sign), dist (m travelled forward)"""
-    fx, fz = (xA, zA) if bid == 'A' else (xB, zB)
-    x, z, vxm = fx(t), fz(t), vx(fx, t)
-    n = bike_noise(bid, t)
-    lat = (vxm + n['vlat']) / V
-    return {'x': x + n['dx'], 'y': n['dy'], 'z': z, 'yaw': -math.atan(lat) * 1.1, 'pitch': n['pitch'], 'roll': -clamp(lat * 3.4, -0.5, 0.5), 'dist': -z}
+    """-> dict: x, y, z (three.js), yaw (about +y), pitch (about +x), roll (about +z, three.js sign), dist (m travelled forward),
+    steer (+=左), body_dz / body_pitch (車体のばね上の上下/ピッチ), torso_*, head_*"""
+    fz = zA if bid == 'A' else zB
+    z = fz(t)
+    r = ride(bid, t)
+    h = 0.05
+    vxm = (ride(bid, t + h)['x'] - ride(bid, t - h)['x']) / (2 * h)
+    phi = r['phi']
+    return {'x': r['x'], 'y': RHO_TIRE * (1 - math.cos(phi)), 'z': z, 'yaw': -math.atan(vxm / V), 'pitch': 0.0, 'roll': -phi, 'dist': -z,
+            'steer': r['steer'], 'body_dz': r['heave'], 'body_pitch': r['fpitch'], 'torso_roll': r['rho'], 'torso_dz': r['tor_dz'],
+            'torso_pitch': r['tor_pitch'], 'head_roll': r['head_roll'], 'head_yaw': r['head_yaw']}
 
 
 # ---- cameras: 15 shots, hard cuts ----------------------------------------------------------------

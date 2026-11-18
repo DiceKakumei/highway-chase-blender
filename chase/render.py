@@ -6,13 +6,15 @@
 Blender の座標: X=右, Y=前, Z=上。動きは motion.py (three.js 座標) を to_blender() で変換する。"""
 import bpy, bmesh, json, math, os, sys, time
 import numpy as np
-from mathutils import Matrix, Vector
+from mathutils import Matrix, Vector, Quaternion
 from mathutils.bvhtree import BVHTree
+from mathutils.kdtree import KDTree
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import motion as M   # noqa: E402
+import rig as RG     # noqa: E402
 
 CFG = json.load(open(os.path.join(ROOT, 'vehicles.json'), encoding='utf-8'))
 
@@ -709,6 +711,20 @@ def build_proto(name):
     body_me = me; body_me.name = name + '_body'
     bpy.data.objects.remove(ob)
 
+    # バイク+ライダーの疑似リグの重み(tools/make_rig_weights.py が作る)を、頂点の位置の最近傍で写す
+    rigw = None
+    if c['axes'] == 'bike':
+        z = np.load(os.path.join(d, 'rig_weights.npz'))
+        kd = KDTree(len(z['pos']))
+        for i, pp in enumerate(z['pos']):
+            kd.insert(pp.tolist(), i)
+        kd.balance()
+        cb = co_array(body_me); idx = np.empty(len(cb), np.int64); far = 0.0
+        for i, pp in enumerate(cb):
+            _, j, dd = kd.find(pp.tolist()); idx[i] = j; far = max(far, dd)
+        rigw = z['W'].astype(np.float32)[idx]
+        print('   rig weights: %d verts, max match distance %.5f m, mean weights %s' % (len(cb), far, dict(zip(RG.BONES, rigw.mean(0).round(3).tolist()))))
+
     # wheels: cut the islands out of the wheel GLB, centre, scale, (flip)
     ow = import_glb(os.path.join(d, '3_wheels.glb'))
     wme = ow.data
@@ -767,7 +783,7 @@ def build_proto(name):
         lamps_me.polygons.foreach_set('material_index', np.asarray(FM, dtype=np.int32)); lamps_me.update()
     print('proto %s: scale %.3f size %s  wheels %d  (%.1fs)' % (name, s, np.round(hi - lo, 2).tolist(), len(wheels), time.time() - t0))
     return {'name': name, 'body': body_me, 'wheels': wheels, 'lamps': lamps_me, 'head': ends['head'] or (hi[1], 0.7), 'tail': ends['tail'] or (lo[1], 0.8),
-            'bike': c['axes'] == 'bike', 'lo': lo, 'hi': hi}
+            'bike': c['axes'] == 'bike', 'lo': lo, 'hi': hi, 'rigw': rigw, 'rig': RG.RIG.get(name)}
 
 
 _lights = {}
@@ -786,30 +802,74 @@ def light_data(kind):
     return l
 
 
+def make_rig(tag, root, body, proto):
+    """バイク+ライダーのアーマチュア(ボーンは rig.BONES)。頂点グループ = 重み。"""
+    cfg = proto['rig']; W = proto['rigw']
+    ad = bpy.data.armatures.new(tag + '_rig')
+    ao = link(bpy.data.objects.new(tag + '_rig', ad), root)
+    bpy.context.view_layer.objects.active = ao
+    bpy.ops.object.mode_set(mode='EDIT')
+    pivots = {'static': (0, 0, 0), 'frame': cfg['frame_pivot'], 'steer_u': cfg['steer_head'], 'steer_s': cfg['steer_head'], 'torso': cfg['hip'], 'head': cfg['neck']}
+    eb = {}
+    for bn in RG.BONES:
+        e = ad.edit_bones.new(bn); e.head = Vector(pivots[bn]); e.tail = Vector(pivots[bn]) + Vector((0, 0, 0.1)); eb[bn] = e
+    for bn in RG.BONES:
+        if RG.PARENT[bn]:
+            eb[bn].parent = eb[RG.PARENT[bn]]; eb[bn].use_connect = False
+    bpy.ops.object.mode_set(mode='OBJECT')
+    rest = {bn: np.array(ad.bones[bn].matrix_local) for bn in RG.BONES}
+    for i, bn in enumerate(RG.BONES):
+        vg = body.vertex_groups.new(name=bn)
+        q = np.rint(W[:, i] * 24).astype(np.int32)
+        for lvl in range(1, 25):
+            ix = np.nonzero(q == lvl)[0]
+            if len(ix):
+                vg.add(ix.tolist(), lvl / 24.0, 'REPLACE')
+    md = body.modifiers.new('Armature', 'ARMATURE'); md.object = ao; md.use_vertex_groups = True
+    for bn in RG.BONES:
+        ao.pose.bones[bn].rotation_mode = 'QUATERNION'
+    print('   rig %s: bones %d, vertex groups %d' % (tag, len(RG.BONES), len(body.vertex_groups)))
+    return {'obj': ao, 'rest': rest}
+
+
 def instance(proto, tag, color=(1, 1, 1, 0.5), head_light=True):
     root = empty(tag)
+    is_bike = proto['bike'] and proto.get('rigw') is not None
+    fr = steer = None
+    if is_bike:
+        cfg = proto['rig']
+        F = Vector(cfg['frame_pivot']); Hh = Vector(cfg['steer_head'])
+        fr = empty(tag + '_frame', root); fr.location = F                      # 車体のばね上(上下・ピッチ)を持つ。ランプとライトを付ける
+        steer = empty(tag + '_steer', root); steer.location = Hh; steer.rotation_mode = 'QUATERNION'   # ステアリング軸まわり。前輪を付ける
     body = link(bpy.data.objects.new(tag + '_body', proto['body']), root)
     body.color = color
     wheels = []
     for i, (me, x, y, r) in enumerate(proto['wheels']):
-        w = link(bpy.data.objects.new('%s_w%d' % (tag, i), me), root)
-        w.location = (x, y, r)
+        par = steer if (is_bike and y > 0.3) else root
+        w = link(bpy.data.objects.new('%s_w%d' % (tag, i), me), par)
+        w.location = (x, y, r) if par is root else (Vector((x, y, r)) - Hh)
         try:
             w.cycles.motion_steps = 4
         except Exception:
             pass
         wheels.append((w, r))
     if proto['lamps'] is not None:
-        link(bpy.data.objects.new(tag + '_lamps', proto['lamps']), root)
+        lo_ = link(bpy.data.objects.new(tag + '_lamps', proto['lamps']), fr if is_bike else root)
+        if is_bike:
+            lo_.location = -F
     if head_light:
         hy, hz = proto['head']
-        o = link(bpy.data.objects.new(tag + '_head', light_data('bike_head' if proto['bike'] else 'car_head')), root)
-        o.location = (0, hy + 0.06, hz); o.rotation_euler = (math.pi / 2 - math.radians(5.5 if proto['bike'] else 7.0), 0, 0)
+        o = link(bpy.data.objects.new(tag + '_head', light_data('bike_head' if proto['bike'] else 'car_head')), fr if is_bike else root)
+        o.location = (0, hy + 0.06, hz) if not is_bike else (Vector((0, hy + 0.06, hz)) - F)
+        o.rotation_euler = (math.pi / 2 - math.radians(5.5 if proto['bike'] else 7.0), 0, 0)
     if proto['bike']:
         ty, tz = proto['tail']
-        o = link(bpy.data.objects.new(tag + '_tail', light_data('tail')), root)
-        o.location = (0, ty - 0.12, tz)
-    return {'root': root, 'wheels': wheels, 'proto': proto}
+        o = link(bpy.data.objects.new(tag + '_tail', light_data('tail')), fr if is_bike else root)
+        o.location = (0, ty - 0.12, tz) if not is_bike else (Vector((0, ty - 0.12, tz)) - F)
+    out = {'root': root, 'wheels': wheels, 'proto': proto}
+    if is_bike:
+        out.update({'frame': fr, 'steer': steer, 'rig': make_rig(tag, root, body, proto)})
+    return out
 
 
 WHITE_TINTS = [(1, 1, 1), (0.55, 0.57, 0.60), (0.035, 0.035, 0.04), (1, 1, 1), (0.13, 0.14, 0.15), (0.42, 0.03, 0.03), (0.04, 0.08, 0.28), (0.88, 0.86, 0.80)]
@@ -848,7 +908,33 @@ def bike_matrix(bid, t):
     p = M.bike_pose(bid, t)
     loc = M.to_blender((p['x'], p['y'], p['z']))
     R = Matrix.Rotation(p['yaw'], 4, 'Z') @ Matrix.Rotation(p['pitch'], 4, 'X') @ Matrix.Rotation(-p['roll'], 4, 'Y')
-    return Matrix.Translation(loc) @ R, p['dist']
+    return Matrix.Translation(loc) @ R, p['dist'], p
+
+
+def key_quat(obj, j, q):
+    obj.rotation_quaternion = q; obj.keyframe_insert('rotation_quaternion', frame=j)
+
+
+def key_bike_rig(bk, pose, j):
+    """車体のばね上(上下・ピッチ)、ステアリング、ライダー(胴体・頭)の動きをキーに打つ。車輪は路面のまま(root の下で回るだけ)。"""
+    cfg = bk['proto']['rig']
+    ld = RG.local_deltas(cfg, pose)
+    F = Vector(cfg['frame_pivot'])
+    fr = bk['frame']
+    fr.location = F + Vector((0, 0, pose['body_dz'])); fr.rotation_euler = (pose['body_pitch'], 0, 0)
+    fr.keyframe_insert('location', frame=j); fr.keyframe_insert('rotation_euler', frame=j)
+    up = Vector(cfg['steer_head']) - Vector(cfg['axle'])
+    key_quat(bk['steer'], j, Quaternion(up.normalized(), pose['steer']))
+    ao = bk['rig']['obj']; rest = bk['rig']['rest']
+    for bn in RG.BONES:
+        if bn == 'static':
+            continue
+        R = rest[bn]
+        Bm = Matrix(np.linalg.inv(R) @ ld[bn] @ R)
+        loc, rot, _ = Bm.decompose()
+        pb = ao.pose.bones[bn]
+        pb.location = loc; pb.rotation_quaternion = rot
+        pb.keyframe_insert('location', frame=j); pb.keyframe_insert('rotation_quaternion', frame=j)
 
 
 def camera_matrix(t, k):
@@ -876,12 +962,14 @@ def apply_frame(S, cam, f, blur):
     prev = {}
     for j, tt in times:
         for bid in ('A', 'B'):
-            m, dist = bike_matrix(bid, tt)
+            m, dist, pose = bike_matrix(bid, tt)
             e = m.to_euler('XYZ')
             if bid in prev:
                 e.make_compatible(prev[bid])
             prev[bid] = e
             key(S[bid]['root'], j, loc=m.to_translation(), rot=e)
+            if 'rig' in S[bid]:
+                key_bike_rig(S[bid], pose, j)
             for w, r in S[bid]['wheels']:
                 key(w, j, rot=(-dist / r, 0, 0))
         for c in S['cars']:
