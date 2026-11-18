@@ -181,6 +181,10 @@ def make_flash(R):
     ld = bpy.data.lights.new('flashL', 'POINT'); ld.energy = 260.0; ld.color = (1.0, 0.75, 0.4); ld.shadow_soft_size = 0.05
     lo = bpy.data.objects.new('flashL', ld); R.link(lo, o); lo.location = (0, 0.12, 0)
     o.rotation_mode = 'QUATERNION'; o.hide_render = True; lo.hide_render = True
+    try:
+        o.cycles.use_motion_blur = False                    # 一瞬の光なので、にじませない(にじむと長い筋になる)
+    except Exception:
+        pass
     return {'obj': o, 'light': lo, 'mat': mat}
 
 

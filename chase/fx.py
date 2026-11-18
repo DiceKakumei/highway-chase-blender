@@ -211,7 +211,11 @@ def smoke_material(Rm):
     nz = Rm.math_node(nt, 'ADD', Rm.math_node(nt, 'MULTIPLY', noi.outputs['Fac'], 0.9), 0.55)
     dens = Rm.math_node(nt, 'MULTIPLY', Rm.math_node(nt, 'MULTIPLY', fall, nz), oi.outputs['Alpha'])
     pv = nt.nodes.new('ShaderNodeVolumePrincipled')
-    pv.inputs['Color'].default_value = (0.80, 0.80, 0.82, 1.0)
+    pv.inputs['Color'].default_value = (0.93, 0.93, 0.95, 1.0)
+    try:
+        pv.inputs['Emission Color'].default_value = (0.9, 0.9, 1.0, 1.0); pv.inputs['Emission Strength'].default_value = 0.05
+    except Exception:
+        pass
     nt.links.new(Rm.math_node(nt, 'MULTIPLY', dens, 2.6), pv.inputs['Density'])
     try:
         pv.inputs['Anisotropy'].default_value = 0.3
