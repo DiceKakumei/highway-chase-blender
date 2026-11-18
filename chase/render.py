@@ -60,6 +60,7 @@ P = {
     'street_emit': 60.0,     # 地上の街灯
     'pool_emit': 2.2,        # 地上の街灯の光だまり
     'street_car_emit': 25.0, # 地上の車のライト
+    'dbg_truck': None,       # 確認用カメラ(主役のトラック基準)
 }
 
 Y0, Y1 = -300.0, 2700.0          # road extent (three.js Z0=300 .. Z1=-2700)
@@ -956,6 +957,7 @@ def key(obj, j, loc=None, rot=None):
 
 def apply_frame(S, cam, f, blur):
     t = f / M.FPS; k = M.shot_index(t); dt = 1.0 / M.FPS
+    P['_f'] = f
     times = ((0, t - dt), (1, t), (2, t + dt)) if blur else ((1, t),)
     campos_y = M.to_blender(M.shot_at(t, k)[0])[1]
     spin = [c for c in S['cars'] if abs(-M.pos_of(c['c'], t) - campos_y) < P['wheel_spin_range']]
@@ -979,6 +981,14 @@ def apply_frame(S, cam, f, blur):
             for w, r in c['wheels']:
                 key(w, j, rot=(-d / r, 0, 0))
         m, fov = camera_matrix(tt, k)
+        if P.get('dbg_truck'):      # 確認用: 主役のトラックを基準にしたカメラ [位置xyz, 見る先xyz, fov](ブレンダー座標、トラックの原点から)
+            hero = next(c for c in S['cars'] if c['c'].get('hero'))
+            tl = Vector((hero['c']['x'], -M.pos_of(hero['c'], tt), 0.0)); dd = P['dbg_truck']
+            if isinstance(dd[0], list):
+                dd = dd[P.get("_f", 0) % len(dd)]
+            cp = tl + Vector(dd[0:3]); lp = tl + Vector(dd[3:6]); fov = dd[6]
+            f_ = (lp - cp).normalized(); r_ = f_.cross(Vector((0, 0, 1))).normalized(); u_ = r_.cross(f_)
+            m = Matrix.Translation(cp) @ Matrix((r_, u_, -f_)).transposed().to_4x4()
         e = m.to_euler('XYZ')
         if 'cam' in prev:
             e.make_compatible(prev['cam'])
