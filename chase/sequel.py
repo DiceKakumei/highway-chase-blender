@@ -28,20 +28,8 @@ LANE_B_S = [[0, -1.8], [11.0, -1.8], [12.3, 1.0], [20, 1.0]]
 # ---- 銃の動き(τ) ----------------------------------------------------------------------------------
 T_GRIP_LEAVE, T_CHEST, T_DRAWN = 1.0, 1.9, 2.6            # 右手: ハンドル → 上着の内側 → 銃を抜いて構える
 T_HOLSTER0, T_HOLSTER1, T_REGRIP = 10.8, 11.4, 11.9      # 構え → しまう → ハンドルへ戻す
-BURSTS = [(5.2, 5.9), (6.4, 7.1), (7.7, 8.4), (8.8, 9.6), (9.9, 10.5)]      # 最後の1発がAの後輪に当たる
-FIRE_EVERY = 3.0 / FPS                                    # 8発/秒
-
-
-def fire_times():
-    out = []
-    for a, b in BURSTS:
-        t = a
-        while t < b:
-            out.append(round(t * FPS) / FPS); t += FIRE_EVERY
-    return out
-
-
-FIRES = fire_times()
+SHOT_TIMES = [5.2, 6.3, 7.4, 8.5, 9.5, 10.4]       # 6発。1回引き金を引くごとに1発(拳銃は連射できない)。片手・走行中・避ける相手への狙い撃ちなので、約1秒おき。6発目がAの後輪に当たり、弾が尽きる(走行中は装填できない)
+FIRES = [round(t * FPS) / FPS for t in SHOT_TIMES]
 HIT_T = FIRES[-1]                                         # 最後の1発 = Aの後輪(タイヤ)に命中。パンクして、ふらつきながら減速する
 A_BRAKE_T0 = HIT_T + 0.25
 A_DECEL_G = 0.68
@@ -59,10 +47,12 @@ def gun_state(tau):
     chest = clamp(chest, 0.0, 1.0)
     vis = 1.0 if (T_CHEST - 0.25) < tau < (T_HOLSTER1 - 0.05) else 0.0
     rec = 0.0
-    for ft in FIRES:
+    for ft in FIRES:                                         # 反動: 銃口が約0.04秒で跳ね上がり、約0.13秒の時定数で戻る
         d = tau - ft
-        if 0 <= d < 0.12:
-            rec = max(rec, math.exp(-d / 0.035))
+        if 0 <= d < 0.04:
+            rec = max(rec, d / 0.04)
+        elif d >= 0.04:
+            rec = max(rec, math.exp(-(d - 0.04) / 0.13))
     return {'chest': chest, 'aim': clamp(aim, 0.0, 1.0), 'vis': vis, 'recoil': rec, 'grip': clamp(1 - chest - aim, 0.0, 1.0)}
 
 

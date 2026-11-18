@@ -26,7 +26,7 @@ K = {
     'knee_pole': (0.45, 0.9, 0.15),      # 膝の向き(前・外)
     'elbow_pole': (0.55, -0.35, -0.55),  # 肘の向き(外・後ろ・下)
     'chest_off': (0.10, 0.15, -0.14),    # 銃を抜くとき、右手が入る位置(胸の関節から。上着の内側。胴体に付いて動く)
-    'gun_grip_off': (0.0, 0.055, 0.0),   # 手首から銃のグリップ中心まで(前腕の向きに)
+    'gun_grip_off': (0.0, 0.105, 0.012),  # 手首から銃のグリップ中心まで(前腕の向きに、上に)。小さすぎると銃が腕にめり込む
     'gun_scale': 1.0,
     'foot_down': (-0.46, 0.0),           # 横滑りのとき、左足を着く位置(バイクの左, 前)。ここは地面
 }
@@ -240,7 +240,7 @@ def pose(rd, pz, root_M, A_world, tau):
     gw = np.array([gs['grip'], gs['chest'], gs['aim']]); gw = gw / max(gw.sum(), 1e-6)
     TR = gw[0] * grip_R + gw[1] * chest_h + gw[2] * aim_t
     rec = gs['recoil']
-    TR = TR - aimdir * 0.035 * rec * aim_k + np.array([0, 0, 0.012 * rec])
+    TR = TR - aimdir * 0.06 * rec * aim_k + np.array([0, 0, 0.025 * rec])
     targets_arm = {'R': TR, 'L': grip_L}
     shoulder = {'R': sh_R, 'L': sh_L}
     el_pole = {'R': np.array([K['elbow_pole'][0], K['elbow_pole'][1], K['elbow_pole'][2]]), 'L': np.array([-K['elbow_pole'][0], K['elbow_pole'][1], K['elbow_pole'][2]])}
@@ -294,7 +294,7 @@ def pose(rd, pz, root_M, A_world, tau):
         zz = np.array([0.0, -1.0, 0.0])
     zz /= np.linalg.norm(zz); xx = np.cross(fR, zz)
     Rg = np.stack([xx, fR, zz], axis=1)
-    rk = RG.rot3(xx, 0.07 * rec)
+    rk = RG.rot3(xx, 0.20 * rec)
     Rg = rk @ Rg
     gun_M = np.eye(4); gun_M[:3, :3] = Rg; gun_M[:3, 3] = wrR + fR * K['gun_grip_off'][1] + Rg @ np.array([0.0, 0.0, K['gun_grip_off'][2]])
     muz = np.eye(4); muz[:3, :3] = Rg; muz[:3, 3] = gun_M[:3, 3] + Rg @ np.array([0.0, 0.175, 0.07])
