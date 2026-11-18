@@ -713,7 +713,7 @@ def build_proto(name):
     bpy.data.objects.remove(ob)
     if name == 'veh_truck':
         import cab
-        cab.strip_baked_wipers(body_me, os.path.join(d, 'wiper_faces.npz'))
+        cab.strip_baked(body_me, d)
 
     # バイク+ライダーの疑似リグの重み(tools/make_rig_weights.py が作る)を、頂点の位置の最近傍で写す
     rigw = None

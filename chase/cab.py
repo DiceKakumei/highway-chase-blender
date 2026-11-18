@@ -13,12 +13,12 @@ from mathutils.kdtree import KDTree
 import bmesh
 
 # ---- 窓の面(ガラス板) ---------------------------------------------------------------------------
-WS_TOP = (2.06, 3.02)       # (z, y) フロントガラスの上端
-WS_BOT = (1.39, 3.41)       # (z, y) 下端
-WS_HW = (0.86, 0.89)        # 上端・下端の半幅
-SIDE_X = 0.915
-SIDE_Y = (2.17, 3.22)
-SIDE_Z = (1.37, 2.03)
+WS_TOP = (2.06, 3.131)      # (z, y) フロントガラスの上端(メッシュ内の白い板に合わせた: y = 3.919 - 0.383 z)
+WS_BOT = (1.39, 3.387)      # (z, y) 下端
+WS_HW = (0.86, 0.88)        # 上端・下端の半幅
+SIDE_X = 0.903
+SIDE_Y = (2.30, 3.20)
+SIDE_Z = (1.42, 2.03)
 DRIVER_X = 0.45             # 右ハンドル
 PASS_X = -0.38
 # ガラス板の座標系: e1=横, e2=窓の上向き(板の上), nout=外向きの法線
@@ -191,7 +191,7 @@ def build_glass():
     a.quad([(-WS_HW[0], WS_TOP[1], WS_TOP[0]), (WS_HW[0], WS_TOP[1], WS_TOP[0]), (WS_HW[1], WS_BOT[1], WS_BOT[0]), (-WS_HW[1], WS_BOT[1], WS_BOT[0])], 0)
     for sx in (-1, 1):
         x = sx * SIDE_X
-        a.quad([(x, SIDE_Y[0], SIDE_Z[0]), (x, SIDE_Y[1], SIDE_Z[0]), (x, SIDE_Y[0] + 0.83, SIDE_Z[1]), (x, SIDE_Y[0], SIDE_Z[1])], 0)
+        a.quad([(x, SIDE_Y[0], SIDE_Z[0]), (x, SIDE_Y[1], SIDE_Z[0]), (x, SIDE_Y[1] - 0.18, SIDE_Z[1]), (x, SIDE_Y[0], SIDE_Z[1])], 0)
     return a
 
 
@@ -205,24 +205,29 @@ def build_wiper():
 
 
 # ---- 焼き込みワイパーの面を消す ------------------------------------------------------------------
-def strip_baked_wipers(me, npz_path):
+def strip_faces(me, npz_path, keys, label):
+    """面の中心の位置(npz)に一致する面を消す(元のメッシュに焼き込まれた白いガラス板・ワイパー)"""
     z = np.load(npz_path)
-    pts = np.vstack([z['L'], z['R']])
+    pts = np.vstack([z[k] for k in keys])
     kd = KDTree(len(pts))
     for i, p in enumerate(pts):
         kd.insert(p.tolist(), i)
     kd.balance()
-    co = np.empty(len(me.vertices) * 3, np.float32); me.vertices.foreach_get('co', co); co = co.reshape(-1, 3)
     bm = bmesh.new(); bm.from_mesh(me); bm.faces.ensure_lookup_table()
     dele = []
     for f in bm.faces:
-        c = f.calc_center_median()
-        _, j, dd = kd.find(c)
+        _, j, dd = kd.find(f.calc_center_median())
         if dd < 0.004:
             dele.append(f)
     bmesh.ops.delete(bm, geom=dele, context='FACES')
     bm.to_mesh(me); bm.free(); me.update()
-    print('   truck: removed %d baked wiper faces (of %d positions)' % (len(dele), len(pts)))
+    print('   truck: removed %d %s faces (of %d positions)' % (len(dele), label, len(pts)))
+
+
+def strip_baked(me, d):
+    import os
+    strip_faces(me, os.path.join(d, 'wiper_faces.npz'), ['L', 'R'], 'baked wiper')
+    strip_faces(me, os.path.join(d, 'glass_faces.npz'), ['G'], 'baked glass')
 
 
 # ---- Blender への組み込み ----------------------------------------------------------------------------
