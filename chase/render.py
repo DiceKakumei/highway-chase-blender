@@ -61,7 +61,7 @@ P = {
     'pool_emit': 2.2,        # 地上の街灯の光だまり
     'street_car_emit': 25.0, # 地上の車のライト
     'dbg_truck': None,       # 確認用カメラ(主役のトラック基準)
-    'relax_iters': 3,        # 車体メッシュの凹凸をならす回数(0 = ならさない)
+    'relax_iters': 10,       # 車体メッシュの凹凸をならす回数(0 = ならさない)
     'dbg_idx': None,         # 確認用カメラの対象(S['cars'] の番号。None = 主役のトラック)
 }
 
@@ -650,7 +650,7 @@ def smooth_mesh(me, angle_deg=62.0, weld=2e-5):
     print('   smooth_mesh: verts %d -> %d, faces %d' % (n0, len(me.vertices), len(me.polygons)))
 
 
-def relax_mesh(me, iters=3, factor=0.5):
+def relax_mesh(me, iters=3, factor=0.5, max_move=0.015):
     """Meshy の形はボコボコで、アップだと角ばった面が目立つ。硬い辺(と端)に触れていない頂点だけ、まわりの平均へ寄せてならす。"""
     if iters <= 0:
         return
@@ -665,8 +665,13 @@ def relax_mesh(me, iters=3, factor=0.5):
     for _ in range(iters):
         bmesh.ops.smooth_vert(bm, verts=verts, factor=factor, use_axis_x=True, use_axis_y=True, use_axis_z=True)
     if verts:
-        d = np.linalg.norm(np.array([v.co[:] for v in verts]) - p0, axis=1)
-        print('   relax_mesh: %d of %d verts smoothed x%d, mean move %.4f m, max %.4f m' % (len(verts), len(bm.verts), iters, d.mean(), d.max()))
+        p1 = np.array([v.co[:] for v in verts]); dv = p1 - p0; d = np.linalg.norm(dv, axis=1)
+        over = d > max_move                                   # 動きすぎた頂点(とがった所・薄い部品)は、上限の長さまでに戻す
+        if over.any():
+            sc = (max_move / d[over])[:, None]
+            for i in np.nonzero(over)[0]:
+                verts[i].co = Vector(p0[i] + dv[i] * (max_move / d[i]))
+        print('   relax_mesh: %d of %d verts smoothed x%d, mean move %.4f m, clamped %d (max %.3f m -> %.3f m)' % (len(verts), len(bm.verts), iters, np.minimum(d, max_move).mean(), int(over.sum()), d.max(), min(d.max(), max_move)))
     bm.to_mesh(me); bm.free(); me.update()
 
 
