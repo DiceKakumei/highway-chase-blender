@@ -2,6 +2,9 @@ name: render
 # 高速チェイス(写実版)。コマを分割して headless Blender (Cycles, CPU) で描画し、Release に添付する。
 #   gh workflow run render.yml -f frames="24,84,125" -f chunks=3 -f samples=48 -f res=960x540
 #   gh workflow run render.yml -f frames="0-719" -f chunks=40 -f samples=64 -f res=1280x720 -f video=1
+# 一部のコマだけ描き直して、残りは前回の結果を使う(base に前回の Release タグを指定):
+#   gh workflow run render.yml -f frames="120-155" -f chunks=2 -f samples=40 -f res=1280x720 -f video=1 -f base=r31
+#   (前回と同じ samples/res/grade/params 以外の見た目の値にすると、描き直したコマだけ色味や画質が変わる)
 on:
   workflow_dispatch:
     inputs:
@@ -24,6 +27,9 @@ on:
       video:
         description: "1 = 連番を結合して音声つきの mp4 にする"
         default: "0"
+      base:
+        description: "前回の Release タグ(例: r31)。指定すると、そのEXRに今回描いたコマを上書きして合体する。空なら今回のコマだけ"
+        default: ""
 permissions:
   contents: write
 jobs:
@@ -57,7 +63,7 @@ jobs:
           print("matrix=" + json.dumps({"include": items}))
           print("tag=r${{ github.run_number }}")
           PY
-      - run: gh release create "r${{ github.run_number }}" --title "render ${{ github.run_number }}" --notes "frames=${{ inputs.frames }} samples=${{ inputs.samples }} res=${{ inputs.res }}" --repo "${{ github.repository }}"
+      - run: gh release create "r${{ github.run_number }}" --title "render ${{ github.run_number }}" --notes "frames=${{ inputs.frames }} samples=${{ inputs.samples }} res=${{ inputs.res }} base=${{ inputs.base }}" --repo "${{ github.repository }}"
         env: { GH_TOKEN: "${{ github.token }}" }
   chunk:
     needs: prep
@@ -106,11 +112,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GRADE: ${{ inputs.grade }}
+          BASE: ${{ inputs.base }}
         run: |
           mkdir -p dl exr png
+          if [ -n "$BASE" ]; then
+            # 前回のEXRを先に展開し(タイミング・ログは捨てる)、今回のコマで上書きする
+            mkdir -p dl_base
+            gh release download "$BASE" -p "exr-*.tar" -D dl_base --repo "${{ github.repository }}"
+            for f in dl_base/*.tar; do tar -xf "$f" -C exr; done
+            rm -f exr/timing_*.json exr/log_*.txt
+            echo "base $BASE:" $(ls exr/*.exr | wc -l) "frames"
+          fi
           gh release download "${{ needs.prep.outputs.tag }}" -p "exr-*.tar" -D dl --repo "${{ github.repository }}"
           for f in dl/*.tar; do tar -xf "$f" -C exr; done
           ls exr/*.exr | wc -l
+          if [ -n "$BASE" ]; then
+            python3 - <<'PY2'
+          import glob, os, sys
+          n = sorted(int(os.path.basename(p)[:4]) for p in glob.glob('exr/[0-9][0-9][0-9][0-9].exr'))
+          miss = sorted(set(range(0, n[-1] + 1)) - set(n))
+          print('merged frames', len(n), 'last', n[-1], 'missing', miss[:20])
+          sys.exit(1 if miss else 0)
+          PY2
+          fi
           python3 tools/post.py exr png --params "$GRADE" --sheet sheet.jpg
           python3 - <<'PY'
           import json, glob
