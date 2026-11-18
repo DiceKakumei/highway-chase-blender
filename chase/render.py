@@ -17,6 +17,7 @@ import motion as M   # noqa: E402
 import rig as RG     # noqa: E402
 import sequel as SQ  # noqa: E402
 import rider as RD   # noqa: E402
+import fx as FX      # noqa: E402
 
 CFG = json.load(open(os.path.join(ROOT, 'vehicles.json'), encoding='utf-8'))
 
@@ -954,6 +955,7 @@ def build_vehicles():
     S['A'] = instance(protos['bike_A'], 'BikeA'); S['B'] = instance(protos['bike_B2' if seq else 'bike_B'], 'BikeB')
     if seq:
         S['B']['rider'] = RD.build(sys.modules[__name__], S['B']['root'], protos['bike_B2'])
+        S['fx'] = FX.build(sys.modules[__name__], S['B']['rider'])
     cars = []
     pick = M.rng(555)
     traffic = M.traffic()
@@ -1066,6 +1068,8 @@ def apply_frame(S, cam, f, blur):
                 RD.key(S[bid]['rider'], j, pose, np.array(m), np.array(aw), tt - toff)
             for wi, (w, r) in enumerate(S[bid]['wheels']):
                 key(w, j, rot=(-(pose.get('dist_r', dist) if wi == 0 else dist) / r, 0, 0))
+        if 'fx' in S:
+            FX.key(S['fx'], j, tt - toff, None)
         for c in S['cars']:
             key(c['root'], j, loc=(c['c']['x'], -M.pos_of(c['c'], tt), 0.0))
         for c in spin:
