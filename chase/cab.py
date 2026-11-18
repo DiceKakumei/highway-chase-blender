@@ -132,10 +132,10 @@ def glass_material(R):
 
 def cab_materials(R):
     S = R.simple_material
-    return [S('Cab_dark', (0.030, 0.032, 0.036), 0.75), S('Cab_dash', (0.022, 0.022, 0.025), 0.45), S('Cab_seat', (0.040, 0.044, 0.052), 0.9),
-            S('Cab_wheel', (0.012, 0.012, 0.014), 0.4), S('Drv_jacket', (0.045, 0.058, 0.080), 0.8), S('Drv_pants', (0.028, 0.030, 0.040), 0.85),
-            S('Drv_skin', (0.30, 0.19, 0.15), 0.55), S('Drv_hair', (0.015, 0.012, 0.012), 0.6),
-            R.emission_material('Cab_cluster', (1.0, 0.62, 0.25), 2.2, one_sided=False)]
+    return [S('Cab_dark', (0.045, 0.048, 0.054), 0.75), S('Cab_dash', (0.030, 0.030, 0.034), 0.45), S('Cab_seat', (0.065, 0.070, 0.082), 0.9),
+            S('Cab_wheel', (0.012, 0.012, 0.014), 0.4), S('Drv_jacket', (0.085, 0.105, 0.145), 0.8), S('Drv_pants', (0.050, 0.054, 0.072), 0.85),
+            S('Drv_skin', (0.46, 0.29, 0.22), 0.55), S('Drv_hair', (0.020, 0.016, 0.016), 0.6),
+            R.emission_material('Cab_cluster', (1.0, 0.62, 0.25), 4.0, one_sided=False)]
 
 
 M_DARK, M_DASH, M_SEAT, M_WHEEL, M_JACKET, M_PANTS, M_SKIN, M_HAIR, M_GLOW = range(9)
