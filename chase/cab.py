@@ -240,13 +240,13 @@ def box_material(R):
     rear = R.smooth(nt, M(nt, 'ABSOLUTE', M(nt, 'SUBTRACT', y, b['y0'])), 0.012, 0.004)
     dline = M(nt, 'MULTIPLY', R.smooth(nt, M(nt, 'ABSOLUTE', x), 0.010, 0.004), rear)
     skirt = R.smooth(nt, z, 1.16, 1.08)
-    dirt = M(nt, 'MULTIPLY', R.smooth(nt, z, 1.9, 1.0), 0.20)
+    dirt = M(nt, 'MULTIPLY', R.smooth(nt, z, 1.9, 1.0), 0.12)
     nz = R.noise(nt, pos, 2.2, 3.0, 0.55)
     f = M(nt, 'SUBTRACT', 1.0, M(nt, 'ADD', M(nt, 'ADD', M(nt, 'MULTIPLY', rib, 0.14), M(nt, 'MULTIPLY', dline, 0.20)),
                                   M(nt, 'ADD', M(nt, 'ADD', M(nt, 'MULTIPLY', corner, 0.20), dirt), M(nt, 'MULTIPLY', skirt, 0.55))), clamp=True)
     f = M(nt, 'MULTIPLY', f, M(nt, 'ADD', 0.94, M(nt, 'MULTIPLY', nz, 0.10)))
     oi = nt.nodes.new('ShaderNodeObjectInfo')
-    col = R.vmath(nt, 'SCALE', oi.outputs['Color'], scale=M(nt, 'MULTIPLY', f, 0.80))
+    col = R.vmath(nt, 'SCALE', oi.outputs['Color'], scale=M(nt, 'MULTIPLY', f, 0.88))
     nt.links.new(col, bsdf.inputs['Base Color'])
     nt.links.new(M(nt, 'ADD', 0.46, M(nt, 'MULTIPLY', skirt, 0.25)), bsdf.inputs['Roughness'])
     try:
