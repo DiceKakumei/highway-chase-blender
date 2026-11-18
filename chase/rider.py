@@ -99,6 +99,10 @@ def build(R, root, proto, tag='BikeB'):
     for m in body.data.materials:
         make_opaque(m)
         R.vehicle_material(m, 'wheel', False)
+    try:
+        body.cycles.use_deform_motion = bool(R.P.get('rider_deform_blur', True))      # 切り分け用: Falseで、変形のモーションブラーを切る
+    except Exception as e:
+        print('use_deform_motion:', e)
     # 静止姿勢のボーン位置(アーマチュア空間)と静止行列
     arm = ao.data
     bones = {b.name: b for b in arm.bones}
