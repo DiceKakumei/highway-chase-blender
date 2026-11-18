@@ -100,7 +100,7 @@ def build(R, root, proto, tag='BikeB'):
         make_opaque(m)
         R.vehicle_material(m, 'wheel', False)
     try:
-        body.cycles.use_deform_motion = bool(R.P.get('rider_deform_blur', True))      # 切り分け用: Falseで、変形のモーションブラーを切る
+        body.cycles.use_deform_motion = bool(R.P.get('rider_deform_blur', False))      # 既定は切る。スキンメッシュの変形ブラーを入れると、ライダーが半透明にぶれる(2026-11-19 切り分けで確認。ブラーを切ると不透明)
     except Exception as e:
         print('use_deform_motion:', e)
     # 静止姿勢のボーン位置(アーマチュア空間)と静止行列
