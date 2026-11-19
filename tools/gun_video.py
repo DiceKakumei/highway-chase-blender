@@ -52,13 +52,13 @@ def cam_at(f):
     cut = [i for i, c in enumerate(CUTS) if c['f0'] <= f < c['f1']][0]
     c = CUTS[cut]; u = (f - c['f0']) / max(1, c['f1'] - c['f0'] - 1)
     if cut == 0:        # 右側の前寄りから全体。 薬莢は画面の左へ飛ぶ。 銃は画面の右寄り
-        d = _dir(65, 14); R = 1.2 * (1 - 0.05 * u); lens = 30
+        d = _dir(65, 16); R = 1.15 * (1 - 0.04 * u); lens = 35
         fwd = -d; rt = np.cross(fwd, [0, 0, 1]); rt /= np.linalg.norm(rt)
         tgt = GUN_C - 0.30 * rt + np.array([0, 0, 0.02]); return tgt + d * R, tgt, lens
     if cut == 1:        # 斜め後ろ上から
         d = _dir(-48, 36); R = 0.62 * (1 - 0.06 * u); tgt = np.array([0.02, 0.03, 0.03]); return tgt + d * R, tgt, 40
     if cut == 2:        # スライドと排莢口のアップ
-        d = _dir(62, 20); R = 0.40 * (1 - 0.05 * u); tgt = np.array([0.012, 0.035, 0.07]); return tgt + d * R, tgt, 50
+        d = _dir(52, 13); R = 0.38 * (1 - 0.05 * u); tgt = np.array([0.012, 0.045, 0.068]); return tgt + d * R, tgt, 50
     az = 20 + 155 * smooth(u)           # 右前寄り -> 正面 -> 左(スライドストップのレバー側)。 薬莢の飛ぶ側(右後ろ)は通らない
     d = _dir(az, 22); tgt = np.array([0.0, 0.04, 0.03]); return tgt + d * 0.46, tgt, 50
 
@@ -268,7 +268,7 @@ def render_main(argv):
     me.from_pydata([(-R, -R, TABLE_Z), (R, -R, TABLE_Z), (R, R, TABLE_Z), (-R, R, TABLE_Z)], [], [(0, 1, 2, 3)]); me.update()
     tb = bpy.data.objects.new('table', me); sc.collection.objects.link(tb)
     mt = bpy.data.materials.new('table_m'); mt.use_nodes = True; b = mt.node_tree.nodes['Principled BSDF']
-    b.inputs['Base Color'].default_value = (0.20, 0.205, 0.215, 1); b.inputs['Roughness'].default_value = 0.42; b.inputs['Metallic'].default_value = 0.0
+    b.inputs['Base Color'].default_value = (0.055, 0.057, 0.062, 1); b.inputs['Roughness'].default_value = 0.5; b.inputs['Metallic'].default_value = 0.0
     me.materials.append(mt)
 
     # ---- 3 灯(キー・フィル・リム)。 灯りは映らないようにする
@@ -281,9 +281,9 @@ def render_main(argv):
         except Exception:
             pass
         return lo
-    area('key', (0.75, 0.55, 0.85), 65, 0.55, (1.0, 0.96, 0.90))
+    area('key', (0.75, 0.55, 0.85), 85, 0.5, (1.0, 0.96, 0.90))
     area('fill', (-0.85, 0.20, 0.45), 22, 0.8, (0.85, 0.92, 1.0))
-    area('rim', (-0.15, -0.85, 0.65), 45, 0.35, (1.0, 1.0, 1.0))
+    area('rim', (-0.15, -0.85, 0.65), 60, 0.35, (1.0, 1.0, 1.0))
 
     # ---- 銃(キットそのまま)
     parts, rep = GK.build_parts(GLB)
@@ -356,7 +356,7 @@ def render_main(argv):
     fo = bpy.data.objects.new('flash', fme); sc.collection.objects.link(fo); fo.location = MUZZLE
     fl = bpy.data.lights.new('flashL', 'POINT'); fl.energy = 0.0; fl.color = (1.0, 0.75, 0.4); fl.shadow_soft_size = 0.03
     flo = bpy.data.objects.new('flashL', fl); sc.collection.objects.link(flo); flo.parent = fo; flo.location = (0, 0.12, 0)
-    FS = 0.8; FE = 1.5
+    FS = 1.0; FE = 1.5
     fo.scale = (0.001,) * 3; fo.keyframe_insert('scale', frame=-5); fl.energy = 0.0; fl.keyframe_insert('energy', frame=-5)
     for sh in SHOTS:
         F = sh['F']
