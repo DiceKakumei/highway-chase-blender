@@ -135,21 +135,23 @@ def reset_stage(sc):
         if m.users == 0:
             bpy.data.meshes.remove(m)
     w = bpy.data.worlds.new('w'); w.use_nodes = True
-    w.node_tree.nodes['Background'].inputs[1].default_value = 0.8
-    w.node_tree.nodes['Background'].inputs[0].default_value = (0.55, 0.58, 0.64, 1)
+    w.node_tree.nodes['Background'].inputs[1].default_value = 0.35
+    w.node_tree.nodes['Background'].inputs[0].default_value = (0.5, 0.52, 0.58, 1)
     sc.world = w
 
 
-def stage(sc, objs):
+def stage(sc, objs, frame=None):
     """台と照明を、物の大きさに合わせて置く -> (中心, 大きさ)"""
     lo, hi = bbox(objs); c = (lo + hi) / 2; S = max(hi - lo)
-    rad = max(hi.x - lo.x, hi.y - lo.y) * 0.75 + S * 0.15
+    if frame:
+        c, S = Vector(frame[0]), frame[1]
+    rad = max(hi.x - lo.x, hi.y - lo.y) * 0.62 + S * 0.05
     bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=rad, depth=S * 0.01, location=(c.x, c.y, lo.z - S * 0.005))
     base = bpy.context.object; mat = bpy.data.materials.new('base'); mat.use_nodes = True
-    mat.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value = (0.32, 0.33, 0.36, 1); mat.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value = 0.8
+    mat.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value = (0.06, 0.065, 0.075, 1); mat.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value = 0.8
     base.data.materials.append(mat)
     for loc, e in (((-1.2, -1.6, 1.4), 450), ((1.6, -0.8, 1.0), 300), ((0.2, 1.8, 1.2), 200)):
-        ld = bpy.data.lights.new('l', 'AREA'); ld.energy = e * S * S; ld.size = S
+        ld = bpy.data.lights.new('l', 'AREA'); ld.energy = e * S * S * 0.35; ld.size = S
         lo_ = bpy.data.objects.new('l', ld); lo_.location = c + Vector(loc) * S * 1.4; sc.collection.objects.link(lo_)
         lo_.rotation_euler = (c - lo_.location).to_track_quat('-Z', 'Y').to_euler()
     return c, S
@@ -158,8 +160,8 @@ def stage(sc, objs):
 VIEWS = (('a_front', (0.75, 1.0, 0.55)), ('b_side', (1.0, 0.0, 0.12)), ('c_top', (0.0, -0.03, 1.0)), ('d_back', (-0.75, -1.0, 0.55)))
 
 
-def shoot_asset(sc, cam, tag, objs, views=VIEWS, dist_mul=2.3, extra=None):
-    c, S = stage(sc, objs)
+def shoot_asset(sc, cam, tag, objs, views=VIEWS, dist_mul=2.3, extra=None, frame=None):
+    c, S = stage(sc, objs, frame)
     cam.data.lens = 50; cam.data.clip_start = S * 0.01; cam.data.clip_end = S * 50
     for vn, d in views:
         d = Vector(d).normalized(); cam.location = c + d * S * dist_mul
@@ -180,7 +182,7 @@ def part_assets():
         try:
             reset_stage(sc)
             objs = assemble_vehicle(name)
-            shoot_asset(sc, cam, '%02d_%s' % (n, name), objs, dist_mul=2.1 if name != 'veh_truck' else 2.0)
+            shoot_asset(sc, cam, '%02d_%s' % (n, name), objs, dist_mul=1.75 if name != 'veh_truck' else 1.6)
         except Exception as e:
             import traceback; traceback.print_exc(); print('ERR', name, e, flush=True)
         print('time', name, round(time.time() - t0, 1), flush=True)
@@ -196,14 +198,14 @@ def part_assets():
         reset_stage(sc)
         gun = RD.import_gun(R, d)
         gun.rotation_mode = 'QUATERNION'
-        shoot_asset(sc, cam, '08_gun_normalized', [gun], dist_mul=2.4, extra={'note': 'rider.import_gun で補正後: 原点=グリップ中心, 銃口=+Y, 上=+Z'})
+        shoot_asset(sc, cam, '08_gun_normalized', [gun], dist_mul=1.9, extra={'note': 'rider.import_gun で補正後: 原点=グリップ中心, 銃口=+Y, 上=+Z'})
     except Exception as e:
         import traceback; traceback.print_exc(); print('ERR gun', e, flush=True); R = None
     # 9: 手(開いた静止姿勢)。 GLBを素のまま読み込んだ向き
     try:
         reset_stage(sc)
         h = import_glb(os.path.join(d, 'hand_open.glb')); [make_opaque(m) for m in h.data.materials]
-        shoot_asset(sc, cam, '09_hand_open_raw', [h], dist_mul=2.4, extra={'note': 'GLBを読み込んだままの向き(Blender上で指=+Z)'})
+        shoot_asset(sc, cam, '09_hand_open_raw', [h], dist_mul=1.9, extra={'note': 'GLBを読み込んだままの向き(Blender上で指=+Z)'})
     except Exception as e:
         import traceback; traceback.print_exc(); print('ERR hand_open', e, flush=True)
     # 10: 手に指ボーンを付け、銃を握らせた状態(ready と fire)
@@ -216,13 +218,13 @@ def part_assets():
         ao = hd['ao']; ao.rotation_mode = 'QUATERNION'
         T = Matrix(hd['T'].tolist()); ao.matrix_world = T                # 手のメッシュ→銃の座標。 銃は原点のまま
         views = (('a_front', (0.9, 1.0, 0.7)), ('b_side', (1.0, 0.0, 0.1)), ('c_top', (0.0, -0.03, 1.0)))
-        shoot_asset(sc, cam, '10_hand_grip_ready', [hd['ob'], gun], views=views, dist_mul=2.2,
+        shoot_asset(sc, cam, '10_hand_grip_ready', [hd['ob'], gun], views=views, dist_mul=1.9,
                     extra={'note': 'hand_grip_poses.json の ready 状態。銃=原点、手=hand_to_gun'})
         for bn in ('Index1', 'Index2', 'Index3'):
             pb = ao.pose.bones[bn]; pb.rotation_quaternion = tuple(hd['q']['fire'][bn])
         bpy.context.view_layer.update()
-        c, S = stage(sc, [hd['ob'], gun])
-        d_ = Vector((1.0, 0.8, 0.5)).normalized(); cam.location = c + d_ * S * 2.2
+        lo_, hi_ = bbox([hd['ob'], gun]); c = (lo_ + hi_) / 2; S = max(hi_ - lo_)
+        d_ = Vector((0.9, 1.0, 0.7)).normalized(); cam.location = c + d_ * S * 1.9
         cam.rotation_euler = (c - cam.location).to_track_quat('-Z', 'Y').to_euler()
         sc.render.filepath = os.path.join(OUT, '10_hand_grip_ready_d_fire.png'); bpy.ops.render.render(write_still=True)
     except Exception as e:
@@ -242,7 +244,15 @@ def part_assets():
         bpy.context.view_layer.update()
         ao = next((o for o in new if o.type == 'ARMATURE' and o.name in bpy.data.objects), None)
         ex = {'armature_scale': [round(x, 4) for x in ao.scale] if ao else None, 'bones': len(ao.data.bones) if ao else 0}
-        shoot_asset(sc, cam, '11_rider_rigged', meshes, dist_mul=2.4, extra=ex)
+        pts = [ao.matrix_world @ b.head_local for b in ao.data.bones] if ao else []
+        if pts:
+            blo = Vector(map(min, *pts)); bhi = Vector(map(max, *pts)); ex['bones_bbox_size'] = [round(x, 3) for x in (bhi - blo)]
+            for o in meshes:
+                ex.setdefault('mesh_names', []).append(o.name)
+            fr = ((blo + bhi) / 2, max(bhi - blo) * 1.15)
+        else:
+            fr = None
+        shoot_asset(sc, cam, '11_rider_rigged', meshes, dist_mul=1.9, extra=ex, frame=fr)
     except Exception as e:
         import traceback; traceback.print_exc(); print('ERR rider', e, flush=True)
 
