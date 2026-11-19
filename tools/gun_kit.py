@@ -321,7 +321,7 @@ def revolve(profile, seg=32, axis='y', center=(0, 0, 0), mat=2, closed_cap=False
     for i in range(k - 1):
         for s in range(seg):
             a, b = i * seg + s, i * seg + (s + 1) % seg; c, d = (i + 1) * seg + s, (i + 1) * seg + (s + 1) % seg
-            F += [(a, b, c), (b, d, c)]
+            F += [(a, c, b), (b, c, d)]      # t が増える向きに、外向きの巻き
     return Mesh(P, N, F, np.full(len(F), mat))
 
 
@@ -365,10 +365,9 @@ def make_casing(seg=20):
     body = revolve(prof, seg=seg, mat=3)
     # y 軸方向の回転体を z 軸に向け直す
     Rm_ = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0.0]]); body.P = body.P @ Rm_.T; body.N = body.N @ Rm_.T
-    body.F = body.F[:, [0, 2, 1]]
     ins = revolve([(L, Rm * 0.80), (L - 0.012, Rm * 0.74), (L - 0.012, 0.0)], seg=seg, mat=1)
     ins.P = ins.P @ Rm_.T; ins.N = ins.N @ Rm_.T
-    ins.N = -ins.N
+    ins.N = -ins.N; ins.F = ins.F[:, [0, 2, 1]]     # 口の内側は内向き
     return concat([body, ins])
 
 
@@ -519,7 +518,7 @@ def posed_parts(parts, pose):
 
 
 # ============================================================ (D) Blender(bpy が要る)
-MAT_SPEC = {0: ('gun_body', (0.075, 0.078, 0.085), 0.7, 0.38), 1: ('gun_inner', (0.022, 0.023, 0.026), 0.85, 0.5),
+MAT_SPEC = {0: ('gun_body', (0.04, 0.042, 0.048), 0.6, 0.42), 1: ('gun_inner', (0.022, 0.023, 0.026), 0.85, 0.5),
             2: ('gun_steel', (0.20, 0.205, 0.215), 0.95, 0.28), 3: ('casing_brass', (0.80, 0.55, 0.18), 1.0, 0.28)}
 
 

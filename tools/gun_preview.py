@@ -92,7 +92,7 @@ def setup():
         pass
     sc.render.resolution_x = TW; sc.render.resolution_y = TH; sc.render.resolution_percentage = 100
     sc.view_settings.view_transform = 'Standard'
-    w = bpy.data.worlds.new('w'); w.use_nodes = True; w.node_tree.nodes['Background'].inputs[0].default_value = (0.62, 0.64, 0.68, 1); w.node_tree.nodes['Background'].inputs[1].default_value = 1.0; sc.world = w
+    w = bpy.data.worlds.new('w'); w.use_nodes = True; w.node_tree.nodes['Background'].inputs[0].default_value = (0.62, 0.64, 0.68, 1); w.node_tree.nodes['Background'].inputs[1].default_value = 0.35; sc.world = w
     st = sc.render
     st.use_stamp = True; st.use_stamp_note = True; st.use_stamp_labels = False; st.stamp_font_size = max(12, TW // 32)
     for a in ('use_stamp_date', 'use_stamp_time', 'use_stamp_render_time', 'use_stamp_frame', 'use_stamp_frame_range', 'use_stamp_memory', 'use_stamp_hostname',
@@ -106,7 +106,7 @@ def setup():
 
 def rig():
     global cam
-    for loc, e in (((-0.5, -0.9, 0.9), 150), ((0.9, -0.5, 0.7), 110), ((0.2, 0.9, 0.6), 70), ((0.0, 0.0, 1.2), 90)):
+    for loc, e in (((-0.5, -0.9, 0.9), 55), ((0.9, -0.5, 0.7), 45), ((0.2, 0.9, 0.6), 25), ((0.0, 0.0, 1.2), 35)):
         ld = bpy.data.lights.new('l', 'AREA'); ld.energy = e; ld.size = 0.9; lo = bpy.data.objects.new('l', ld); lo.location = loc; sc.collection.objects.link(lo)
         lo.rotation_euler = (Vector((0, 0.05, 0.03)) - Vector(loc)).to_track_quat('-Z', 'Y').to_euler()
     cam = bpy.data.objects.new('c', bpy.data.cameras.new('c')); sc.collection.objects.link(cam); sc.camera = cam; cam.data.type = 'ORTHO'
