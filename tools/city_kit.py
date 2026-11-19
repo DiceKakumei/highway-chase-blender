@@ -55,8 +55,11 @@ DEFAULT_POLICY = dict(
     street_lights=24,                # near の街灯の実ライト(スポット)の上限
     trees=True, tree_cap=1800, tree_dist=420.0,
     scale_min={'office': 0.72, 'zakkyo': 0.70, 'mansion': 0.58}, scale_max=1.45,   # far の箱へ近似するときの許容の伸縮(矩形がキットの寸法から外れる割合)
-    solid_scale=(0.80, 1.25),        # near / mid にできる伸縮の範囲(実立体は伸ばさないので、外れたら far)
+    solid_scale=(1.0, 1.25),         # near / mid にできる伸縮の範囲(実立体は伸ばさないので、外れたら far)。 下限1.0 = キットの箱が輪郭の矩形からはみ出さない
     split=True,
+    piece_steps=6,                   # 道路を切る区間の長さ(4m x 6 = 24m)。 区間ごとに、壁までの最小の距離から断面を決める
+    ultra_stride=4,                  # 150mより遠い道路の帯は、4mの点を 4つおき(16m)に
+    apron=True, legacy=False,        # legacy=True は修正前の方式(比較用)
 )
 KIND_JP = {'office': 'ガラスのオフィス', 'zakkyo': '雑居(タイル)', 'mansion': 'マンション', 'low': '低層(小さい)', 'house': '低層(住宅)'}
 NO_STREET = ('rail', 'pedestrian', 'service')
@@ -140,8 +143,151 @@ def largest_rect(mask):
     return best
 
 
+def rect_poly(c, xd, yd, w, d):
+    """向き xd(幅 w)・yd(奥行 d)の長方形の4隅(反時計回り)。 (xd, yd) は右手系。"""
+    c = np.asarray(c, float); a = np.asarray(xd, float) * (w / 2.0); b = np.asarray(yd, float) * (d / 2.0)
+    return np.array([c - a - b, c + a - b, c + a + b, c - a + b])
+
+
+def poly_area_list(pl):
+    n = len(pl)
+    if n < 3:
+        return 0.0
+    return 0.5 * abs(sum(pl[i][0] * pl[(i + 1) % n][1] - pl[(i + 1) % n][0] * pl[i][1] for i in range(n)))
+
+
+def clip_poly(subject, clip):
+    """多角形 subject を、凸多角形 clip(反時計回り)で切った残り(Sutherland-Hodgman)。 -> 点のリスト"""
+    out = [(float(p[0]), float(p[1])) for p in subject]
+    n = len(clip)
+    for i in range(n):
+        ax, ay = clip[i]; bx, by = clip[(i + 1) % n]
+        ex, ey = bx - ax, by - ay
+        inp = out; out = []
+        if not inp:
+            break
+        sx, sy = inp[-1]; ds = ex * (sy - ay) - ey * (sx - ax)
+        for px, py in inp:
+            dp = ex * (py - ay) - ey * (px - ax)
+            if dp >= 0:
+                if ds < 0:
+                    t = ds / (ds - dp); out.append((sx + t * (px - sx), sy + t * (py - sy)))
+                out.append((px, py))
+            elif ds >= 0:
+                t = ds / (ds - dp); out.append((sx + t * (px - sx), sy + t * (py - sy)))
+            sx, sy, ds = px, py, dp
+    return out
+
+
+class Corridor:
+    """通行帯(車道・縁石・歩道の帯)を、中心線の1区間ごとの四角形にして、格子で引けるようにしたもの。 建物の矩形との重なり(面積)を測る・削るのに使う。"""
+    def __init__(self, cell=30.0):
+        self.cell = cell; self.Q = []; self.grid = {}
+
+    def add_quad(self, q):
+        i = len(self.Q); q = np.asarray(q, float); self.Q.append(q)
+        x0, y0 = q.min(0); x1, y1 = q.max(0)
+        for ix in range(int(x0 // self.cell), int(x1 // self.cell) + 1):
+            for iy in range(int(y0 // self.cell), int(y1 // self.cell) + 1):
+                self.grid.setdefault((ix, iy), []).append(i)
+
+    def add_strip(self, S, o_right, o_left, ext=0.0):
+        """折れ線 S の、右 o_right 〜 左 o_left の帯。 ext = 区間の両端を延ばす長さ(曲がり角の隙間を埋める)"""
+        S = np.asarray(S, float)
+        for k in range(len(S) - 1):
+            a, b = S[k], S[k + 1]; d = b - a; L = float(np.hypot(*d))
+            if L < 1e-6:
+                continue
+            t = d / L; n = np.array([-t[1], t[0]]); a2 = a - t * ext; b2 = b + t * ext
+            self.add_quad([a2 - n * o_right, b2 - n * o_right, b2 + n * o_left, a2 + n * o_left])
+
+    def overlap(self, poly, min_area=1e-6):
+        """-> (重なりの多角形のリスト, 面積の合計)。 poly = 矩形など(反時計回り)"""
+        P = np.asarray(poly, float); x0, y0 = P.min(0); x1, y1 = P.max(0)
+        idx = set()
+        for ix in range(int(x0 // self.cell), int(x1 // self.cell) + 1):
+            for iy in range(int(y0 // self.cell), int(y1 // self.cell) + 1):
+                idx.update(self.grid.get((ix, iy), ()))
+        outs = []; tot = 0.0
+        for i in idx:
+            q = self.Q[i]
+            if q[:, 0].max() < x0 or q[:, 0].min() > x1 or q[:, 1].max() < y0 or q[:, 1].min() > y1:
+                continue
+            r = clip_poly(P, q)
+            a = poly_area_list(r) if len(r) >= 3 else 0.0
+            if a > min_area:
+                outs.append(np.asarray(r, float)); tot += a
+        return outs, tot
+
+
+def inscribed_rect(P, c, u, v, eu, ev, step):
+    """輪郭 P の中に4隅が全部入る、(u, v)向きの最大の長方形。 -> (中心, 長さ(u), 幅(v)) / None"""
+    ns = max(2, int(math.ceil(eu / step))); nq = max(2, int(math.ceil(ev / step)))
+    ss = np.linspace(-eu / 2, eu / 2, ns + 1); qq = np.linspace(-ev / 2, ev / 2, nq + 1)
+    S, Q = np.meshgrid(ss, qq, indexing='ij')
+    X = c[0] + S * u[0] + Q * v[0]; Y = c[1] + S * u[1] + Q * v[1]
+    ins = points_in_poly(P, X, Y)
+    cell = ins[:-1, :-1] & ins[1:, :-1] & ins[:-1, 1:] & ins[1:, 1:]
+    if not cell.any():
+        return None
+    a, r0, r1, c0, c1 = largest_rect(cell)
+    if a <= 0:
+        return None
+    s0, s1, q0, q1 = ss[r0], ss[r1], qq[c0], qq[c1]
+    return (c + u * (s0 + s1) / 2 + v * (q0 + q1) / 2, float(s1 - s0), float(q1 - q0))
+
+
 def split_rects(P, c, u, v, eu, ev, step=1.5, max_rects=4, min_side=6.0):
-    """ゆがんだ輪郭を、向きがそろった長方形(最大 max_rects 個)で覆う。 -> [(中心(2,), 長さeu', 幅ev'), ...](u, v の向きは共通)"""
+    """ゆがんだ輪郭を、向きがそろった長方形(最大 max_rects 個。4隅とも輪郭の中)で覆う。 -> [(中心(2,), 長さeu', 幅ev'), ...](u, v の向きは共通)"""
+    ns = max(2, int(math.ceil(eu / step))); nq = max(2, int(math.ceil(ev / step)))
+    ss = np.linspace(-eu / 2, eu / 2, ns + 1); qq = np.linspace(-ev / 2, ev / 2, nq + 1)
+    S, Q = np.meshgrid(ss, qq, indexing='ij')
+    X = c[0] + S * u[0] + Q * v[0]; Y = c[1] + S * u[1] + Q * v[1]
+    ins = points_in_poly(P, X, Y)
+    mask = ins[:-1, :-1] & ins[1:, :-1] & ins[:-1, 1:] & ins[1:, 1:]
+    total = int(mask.sum())
+    if total == 0:
+        return []
+    out = []
+    for _ in range(max_rects):
+        a, r0, r1, c0, c1 = largest_rect(mask)
+        s0, s1, q0, q1 = ss[r0], ss[r1], qq[c0], qq[c1]
+        if (s1 - s0) * (q1 - q0) < min_side * min_side or mask.sum() < 0.12 * total:
+            break
+        out.append((c + u * (s0 + s1) / 2 + v * (q0 + q1) / 2, float(s1 - s0), float(q1 - q0)))
+        mask[r0:r1, c0:c1] = False
+    return out
+
+
+def clip_rect(c, u, v, eu, ev, corr, min_side=2.5, tol=0.01):
+    """矩形(長さ eu は u 向き・幅 ev は v 向き)が通行帯 corr と重なる所を、辺を内側へ動かして削る。 -> (c, eu, ev) / None(削ったら小さすぎる)"""
+    c = np.asarray(c, float)
+    for _ in range(6):
+        ov, tot = corr.overlap(rect_poly(c, u, v, eu, ev), tol)
+        if not ov:
+            return (c, eu, ev)
+        pts = np.vstack(ov); best = None
+        for ax, ln, which in ((u, eu, 0), (v, ev, 1)):
+            for sg in (1.0, -1.0):
+                sc = ((pts - c) @ ax) * sg
+                depth = ln / 2.0 - float(sc.min()) + 0.01
+                nl = ln - depth
+                if depth <= 0 or nl < min_side:
+                    continue
+                nc = c - ax * sg * depth / 2.0
+                cand = (nc, nl, ev) if which == 0 else (nc, eu, nl)
+                ar = cand[1] * cand[2]
+                if best is None or ar > best[0]:
+                    best = (ar, cand)
+        if best is None:
+            return None
+        c, eu, ev = best[1]
+    ov, tot = corr.overlap(rect_poly(c, u, v, eu, ev), tol)
+    return None if ov else (c, eu, ev)
+
+
+def split_rects_legacy(P, c, u, v, eu, ev, step=1.5, max_rects=4, min_side=6.0):
+    """旧方式(比較用): 格子の中心が輪郭の中にある長方形で覆う。 4隅が輪郭の外に出ることがある"""
     ns = max(2, int(math.ceil(eu / step))); nq = max(2, int(math.ceil(ev / step)))
     ss = (np.arange(ns) + 0.5) / ns * eu - eu / 2; qq = (np.arange(nq) + 0.5) / nq * ev - ev / 2
     S, Q = np.meshgrid(ss, qq, indexing='ij')
@@ -208,6 +354,17 @@ def kit_dims(kind, w_front, d_depth):
     return nW * P, nD * P, nW, nD
 
 
+def kit_dims_floor(kind, w_front, d_depth):
+    """実立体用: キットの箱が矩形に収まる寸法(モジュールの整数倍を切り捨て)。 -> (W, D, nW, nD) / None(最小寸法に満たない)"""
+    S = bk.SPECS[kind]; P = S['P']
+    nW = int(w_front / P + 1e-9); nD = int(d_depth / P + 1e-9)
+    if kind == 'mansion' and nW % 2:
+        nW -= 1
+    if nW < S['minb'][0] or nD < S['minb'][1]:
+        return None
+    return nW * P, nD * P, nW, nD
+
+
 def floors_for(kind, h):
     S = bk.SPECS[kind]
     return max(2, int(round((h - S['G']) / S['Hf'])) + 1)
@@ -261,12 +418,88 @@ def load_city(path_or_dict):
         return json.load(f)
 
 
-def plan_buildings(city, center, radius, cam, hour, seed, policy, ridx=None):
-    """-> dict(recs=[ビル(kit)], houses=[低層], stats=...)。 bpy 不要。"""
+# 道路の断面の最小値(m)。 建物までの距離が足りない所は、車道・歩道をここまで狭める。 それでも足りない所は、建物の輪郭を削る
+MIN_G, CW, MIN_SW, BW, MIN_INU = 0.20, 0.18, 0.75, 0.12, 0.30
+BAND_HALF_MIN = 1.25               # 路地(service・歩行者道)の帯の、中心線から建物までの最小の距離
+
+
+def wr_min_for(w):
+    """片側の車道(縁石の手前まで)の最小の幅。 OSM の道路幅の半分、2.25〜2.6m"""
+    return max(2.25, min(2.6, w / 2.0))
+
+
+def wall_min_for(cls, w):
+    """中心線から建物の壁までの最小の距離(車道 + 路肩 + 縁石 + 歩道0.75 + 境界 + 犬走り0.30 + 基礎の出0.03 + 余裕0.01)"""
+    if cls in ('service', 'pedestrian'):
+        return BAND_HALF_MIN
+    return wr_min_for(w) + MIN_G + CW + MIN_SW + BW + MIN_INU + 0.03 + 0.01
+
+
+def road_pieces(city, center, radius, cam, pol):
+    """道路を区間(既定 24m)に切る。 -> [dict(ri, cls, w, S(n,2), band, dc)]。 rail は除く。 bpy 不要"""
+    cx, cy = center; steps = int(pol['piece_steps']); out = []
+    for ri, r in enumerate(city['roads']):
+        cls = r['c']
+        if cls == 'rail':
+            continue
+        band = cls in ('service', 'pedestrian')
+        if (band and r['w'] < 3.0) or (not band and r['w'] < 4.5):
+            continue
+        P = np.asarray(r['p'], float)
+        if P[:, 0].max() < cx - radius - 40 or P[:, 0].min() > cx + radius + 40 or P[:, 1].max() < cy - radius - 40 or P[:, 1].min() > cy + radius + 40:
+            continue
+        S = resample(P, 4.0)
+        if len(S) < 2:
+            continue
+        n = len(S); i = 0
+        while i < n - 1:
+            j = min(n - 1, i + steps)
+            if n - 1 - j < steps * 0.4:
+                j = n - 1
+            seg = S[i:j + 1]; m = seg[len(seg) // 2]
+            if math.hypot(m[0] - cx, m[1] - cy) <= radius + 30:
+                dc = cam_dist2d(cam, m[0], m[1], 0.5 * 4.0 * (j - i)) if cam is not None else 1e9
+                out.append(dict(ri=ri, cls=cls, w=float(r['w']), S=seg, band=band, dc=dc))
+            i = j
+    return out
+
+
+def min_corridor(pieces):
+    """全部の道路の、最小の断面ぶんの通行帯(両側)。 建物の輪郭を削る基準"""
+    corr = Corridor()
+    for pc in pieces:
+        o = wall_min_for(pc['cls'], pc['w']) + 0.10
+        corr.add_strip(pc['S'], o, o, ext=0.35)
+    return corr
+
+
+def plan_buildings(city, center, radius, cam, hour, seed, policy, ridx=None, corr=None):
+    """-> dict(recs=[ビル(kit)], houses=[低層], stats=...)。 bpy 不要。
+    建物の足元の矩形は OSM の輪郭の中に入れ(最大の内接長方形)、通行帯 corr に重なる所は辺を内側に動かして削る(足りなければ描かない)。 policy['legacy'] = True で旧方式(比較用)。"""
     pol = dict(DEFAULT_POLICY); pol.update(policy or {})
+    legacy = bool(pol.get('legacy'))
     ridx = ridx or RoadIndex(city['roads'])
     cx, cy = center
     recs = []; houses = []; skipped = 0
+    cnt = dict(fitted=0, clipped=0, dropped=0)
+
+    def fit(Pg, c, u, v, eu, ev, ratio):
+        """ratio(輪郭/外接矩形の面積)が低い建物は、輪郭の中に入る長方形にする。 -> (c, eu, ev) / None"""
+        if ratio >= 0.9:
+            return (c, eu, ev)
+        cnt['fitted'] += 1
+        return inscribed_rect(Pg, c, u, v, eu, ev, max(0.4, min(1.5, min(eu, ev) / 8.0)))
+
+    def cut(rect, u, v, min_side):
+        if corr is None or rect is None:
+            return rect
+        r = clip_rect(rect[0], u, v, rect[1], rect[2], corr, min_side=min_side)
+        if r is None:
+            cnt['dropped'] += 1; return None
+        if abs(r[1] - rect[1]) > 0.05 or abs(r[2] - rect[2]) > 0.05:
+            cnt['clipped'] += 1
+        return r
+
     for b in city['buildings']:
         Pg = b['p']
         a0 = np.asarray(Pg, float)
@@ -281,17 +514,29 @@ def plan_buildings(city, center, radius, cam, hour, seed, policy, ridx=None):
             dc = cam_dist2d(cam, c[0], c[1], 0.0) if cam is not None else math.hypot(c[0] - cx, c[1] - cy)
             if dc > pol['houses']:
                 continue
-            k = math.sqrt(max(0.35, min(1.0, ratio)))
-            le, wi = eu * k, ev * k
+            if legacy:
+                k = math.sqrt(max(0.35, min(1.0, ratio))); rc, le, wi = c, eu * k, ev * k
+            else:
+                rect = cut(fit(Pg, c, u, v, eu, ev, ratio), u, v, 2.5)
+                if rect is None:
+                    continue
+                rc, le, wi = rect
             if wi < 2.5:
                 continue
-            houses.append(dict(id=bid, kind='house', c=(float(c[0]), float(c[1])), u=(float(u[0]), float(u[1])), eu=le, ev=wi, h=h, rr=rr.random(), gable=rr.random() < 0.6))
+            houses.append(dict(id=bid, kind='house', c=(float(rc[0]), float(rc[1])), u=(float(u[0]), float(u[1])), eu=float(le), ev=float(wi), h=h, rr=rr.random(), gable=rr.random() < 0.6))
             continue
         rects = [(c, eu, ev)]
-        if pol['split'] and ratio < 0.72 and oa > 350.0:
-            rects = split_rects(Pg, c, u, v, eu, ev)
-        elif ratio < 0.9:
-            k = max(0.8, math.sqrt(ratio)); rects = [(c, eu * k, ev * k)]
+        if legacy:
+            if pol['split'] and ratio < 0.72 and oa > 350.0:
+                rects = split_rects_legacy(Pg, c, u, v, eu, ev)
+            elif ratio < 0.9:
+                k = max(0.8, math.sqrt(ratio)); rects = [(c, eu * k, ev * k)]
+        else:
+            if pol['split'] and ratio < 0.72 and oa > 350.0:
+                rects = split_rects(Pg, c, u, v, eu, ev) or [r_ for r_ in [fit(Pg, c, u, v, eu, ev, ratio)] if r_ is not None]
+            else:
+                rects = [r_ for r_ in [fit(Pg, c, u, v, eu, ev, ratio)] if r_ is not None]
+            rects = [r_ for r_ in (cut(r_, u, v, 2.5) for r_ in rects) if r_ is not None]
         for si, (rc, reu, rev) in enumerate(rects):
             q = ridx.nearest(rc[0], rc[1])
             dvec = np.array([q[0] - rc[0], q[1] - rc[1]]) if q else np.array([0.0, -1.0])
@@ -313,24 +558,44 @@ def plan_buildings(city, center, radius, cam, hour, seed, policy, ridx=None):
             rec.update(floors=floors_for(kind, h), W=W, D=D, sx=wf / W, sy=df / D, age=S['age'][0] + (S['age'][1] - S['age'][0]) * r2.random(),
                        r=0.5 * math.hypot(wf, df), dcam=cam_dist2d(cam, rc[0], rc[1], 0.5 * math.hypot(wf, df)))
             recs.append(rec)
-    # detail の割り当て: 距離の閾値 + 棟数の上限(近い順)
+    # detail の割り当て: 距離の閾値 + 棟数の上限(近い順)。 実立体(near/mid)はキットの寸法 W x D のまま置くので、足元の矩形もその大きさにする
     recs.sort(key=lambda r: r['dcam'])
     n_near = n_mid = 0
     for r in recs:
         d = 'far'
         lo, hi = pol['solid_scale']
-        if cam is not None and lo <= r['sx'] <= hi and lo <= r['sy'] <= hi:
+        if legacy:
+            ok = cam is not None and lo <= r['sx'] <= hi and lo <= r['sy'] <= hi
+        else:
+            kd = kit_dims_floor(r['kind'], r['wf'], r['df']) if cam is not None else None
+            ok = kd is not None and r['wf'] / kd[0] <= hi and r['df'] / kd[1] <= hi
+        if ok:
             if r['dcam'] <= pol['near'] and n_near < pol['max_near']:
                 d = 'near'; n_near += 1
             elif r['dcam'] <= pol['mid'] and n_mid < pol['max_mid']:
                 d = 'mid'; n_mid += 1
         r['detail'] = d
+        if d != 'far' and not legacy:
+            r['W'], r['D'] = float(kd[0]), float(kd[1]); r['sx'] = r['sy'] = 1.0
+            r['wf'] = float(r['W']); r['df'] = float(r['D'])
     kinds = {}
     for r in recs:
         kinds[r['kind']] = kinds.get(r['kind'], 0) + 1
     for hh in houses:
         kinds[hh['kind']] = kinds.get(hh['kind'], 0) + 1
-    return dict(recs=recs, houses=houses, kinds=kinds, policy=pol, skipped=skipped)
+    return dict(recs=recs, houses=houses, kinds=kinds, policy=pol, skipped=skipped, rect_fitted=cnt['fitted'], rect_clipped=cnt['clipped'], rect_dropped=cnt['dropped'])
+
+
+def footprints(plan):
+    """描く建物すべての足元の矩形。 -> [(id, 'kit'|'house'|'low', detail, 4隅(4,2))]"""
+    out = []
+    for r in plan['recs']:
+        th = r['theta']; xd = np.array([math.cos(th), math.sin(th)]); yd = np.array([-math.sin(th), math.cos(th)])
+        out.append((r['id'], 'kit', r['detail'], rect_poly(r['c'], xd, yd, r['wf'], r['df'])))
+    for hh in plan['houses']:
+        u = np.asarray(hh['u'], float); v = np.array([-u[1], u[0]])
+        out.append((hh['id'], hh['kind'], 'far', rect_poly(hh['c'], u, v, hh['eu'], hh['ev'])))
+    return out
 
 
 # ------------------------------------------------------------------------------------------------
@@ -422,7 +687,7 @@ def side_gaps(S, vg, reach=26.0):
     return out[0], out[1]
 
 
-def side_params(cls, w, gap, rr):
+def side_params_legacy(cls, w, gap, rr):
     """片側の断面の値を決める。 w = 道路の幅(city.json)、gap = 壁までの距離(None なら建物なし)。 -> street_kit の上書き辞書(profile 込み)"""
     lw = 3.25; g = 0.30; cw = 0.18; bw = 0.12
     lanes = int(min(3, max(1, round((w / 2.0 - g) / lw))))
@@ -454,8 +719,8 @@ def side_params(cls, w, gap, rr):
     return kw
 
 
-def plan_streets(city, center, radius, cam, seed, pol, vg, night, hour):
-    """道路を 約60mの区間に切って、カメラからの距離で detail(near/mid/far/帯)を決め、street_kit の形を作る。 -> dict(groups={'near':[...], ...}, bands=[(pts,w)], ...)
+def plan_streets_legacy(city, center, radius, cam, seed, pol, vg, night, hour):
+    """(旧方式・比較用) 道路を 約60mの区間に切って、カメラからの距離で detail(near/mid/far/帯)を決め、street_kit の形を作る。 -> dict(groups={'near':[...], ...}, bands=[(pts,w)], ...)
     各区間 = 片側ずつ(進行方向の左 / 逆向きの左 = 右)。 bpy 不要。"""
     groups = {'near': [], 'mid': [], 'far': []}; bands = []
     cx, cy = center; pieces = []
@@ -473,7 +738,7 @@ def plan_streets(city, center, radius, cam, seed, pol, vg, night, hour):
         if len(S) < 2:
             continue
         if cls in ('service', 'pedestrian'):
-            bands.append((S, r['w'], cls)); continue
+            bands.append(dict(S=S, hl=r['w'] / 2.0, hr=r['w'] / 2.0, w=r['w'], cls=cls)); continue
         # 約60mの区間(重なりなし)
         n = len(S); i = 0; L60 = 15
         while i < n - 1:
@@ -489,7 +754,7 @@ def plan_streets(city, center, radius, cam, seed, pol, vg, night, hour):
     for dc, ri, cls, w, seg in pieces:
         length = 4.0 * (len(seg) - 1)
         if dc > pol['street_far']:
-            bands.append((seg, w, cls)); continue
+            bands.append(dict(S=seg, hl=w / 2.0, hr=w / 2.0, w=w, cls=cls)); continue
         d = 'far'
         if dc <= pol['street_near'] and near_m < pol['max_street_near_m']:
             d = 'near'; near_m += length
@@ -499,14 +764,356 @@ def plan_streets(city, center, radius, cam, seed, pol, vg, night, hour):
         sd = int(ri * 131 + round(seg[0][0]) * 7 + round(seg[0][1]) * 13) & 0xffff
         for side, gap, line in (('L', gl, seg), ('R', gr, seg[::-1])):
             rr = rng_for(seed, sd, 5 if side == 'L' else 6)
-            kw = side_params(cls, w, gap, rr)
+            kw = side_params_legacy(cls, w, gap, rr)
             kw.update(night=night, hour=hour, lights=False)
             if d == 'far' and dc > pol['far_fence_dist']:
                 kw['fence'] = False
             cl = [(float(x), float(y), 0.0) for x, y in line]
             md, info, lamps, Pp = sk.build_geometry(kw, cl, 1e9, sd, d, **{})
-            groups[d].append(dict(md=md, info=info, P=Pp, lamps=lamps, dc=dc, cls=cls, side=side))
-    return dict(groups=groups, bands=bands, near_m=near_m, mid_m=mid_m)
+            groups[d].append(dict(md=md, info=info, P=Pp, lamps=lamps, dc=dc, cls=cls, side=side, line=np.asarray(line, float)[:, :2], o_w=info['found_front'], wall=info['wall_plane'], q=gap))
+    return dict(groups=groups, ultra=[], bands=bands, pinfo=[], near_m=near_m, mid_m=mid_m)
+
+
+class BoundaryGrid:
+    """描く建物の足元の矩形の縁の点(約0.5m間隔)を格子に入れる。 道路の中心線から壁までの距離(clearance)を引く"""
+    def __init__(self, polys, step=0.5, cell=30.0):
+        pts = []
+        for P in polys:
+            for k in range(4):
+                a = P[k]; b = P[(k + 1) % 4]; L = float(np.hypot(*(b - a))); n = max(1, int(math.ceil(L / step)))
+                for i in range(n):
+                    pts.append(a + (b - a) * (i / n))
+        self.pts = np.asarray(pts, float).reshape(-1, 2); self.cell = cell; self.grid = {}
+        for i, (x, y) in enumerate(self.pts):
+            self.grid.setdefault((int(x // cell), int(y // cell)), []).append(i)
+
+    def query_box(self, x0, y0, x1, y1):
+        idx = []
+        for ix in range(int(x0 // self.cell), int(x1 // self.cell) + 1):
+            for iy in range(int(y0 // self.cell), int(y1 // self.cell) + 1):
+                idx += self.grid.get((ix, iy), [])
+        return self.pts[np.asarray(idx, int)] if idx else np.zeros((0, 2))
+
+    def clearance(self, S, reach=45.0):
+        """中心線 S(n,2) の左・右それぞれで、いちばん近い壁の面までの距離(法線方向)。 区間の端より先の点は数えない。 -> (左, 右)(建物が無ければ None)"""
+        S = np.asarray(S, float)
+        if len(S) < 2:
+            return None, None
+        t = np.gradient(S, axis=0); t /= (np.hypot(t[:, 0], t[:, 1])[:, None] + 1e-9); nrm = np.stack([-t[:, 1], t[:, 0]], 1)
+        P = self.query_box(S[:, 0].min() - reach, S[:, 1].min() - reach, S[:, 0].max() + reach, S[:, 1].max() + reach)
+        if len(P) == 0:
+            return None, None
+        D = np.hypot(P[:, None, 0] - S[None, :, 0], P[:, None, 1] - S[None, :, 1])
+        j = D.argmin(1); dmin = D[np.arange(len(P)), j]
+        ok = dmin < reach
+        P = P[ok]; j = j[ok]
+        if len(P) == 0:
+            return None, None
+        rel = P - S[j]
+        q = rel[:, 0] * nrm[j, 0] + rel[:, 1] * nrm[j, 1]; a = rel[:, 0] * t[j, 0] + rel[:, 1] * t[j, 1]
+        n = len(S)
+        keep = ~(((j == 0) & (a < -0.01)) | ((j == n - 1) & (a > 0.01)))
+        q = q[keep]
+        out = []
+        for sg in (1.0, -1.0):
+            v = q * sg; v = v[v > 0.0]
+            out.append(float(v.min()) if len(v) else None)
+        return out[0], out[1]
+
+
+def side_params(cls, w, q, rr):
+    """片側の断面の値を決める。 q = 中心線から壁の面までの距離(None なら建物なし)。 壁に合わせて 車道(車線数・車線幅)→歩道 を狭める。
+    順序は 車道 → 路肩 → 縁石 → 歩道(最小0.75m) → 民地境界 → (空地) → 犬走り → 基礎の立ち上がり → 壁。 壁の面は q の手前0.01m。 -> street_kit の上書き辞書"""
+    major = cls in MAJOR
+    lw0 = 3.25
+    lanes_w = int(min(3, max(1, round((w / 2.0 - 0.30) / lw0))))
+    sw_def = 3.5 if cls in ('trunk', 'primary') else (3.0 if major else (2.5 if cls == 'tertiary' else 2.0))
+    fd = rr.choices(['low', 'wainscot'], [0.58, 0.42])[0]
+    found_mat = rr.choice(['conc', 'stone', 'tile']) if fd == 'wainscot' else 'conc'
+    wr_floor = wr_min_for(w)
+    lanes, lane_w, g, inu = lanes_w, lw0, 0.30, 0.45
+    setback = 0.0; found_gaps = []
+    if q is None:                                   # 建物が無い側: 標準の断面。 壁が無いので基礎は描かず、空地にする
+        sw = sw_def; found_gaps = [(0.0, 1e4)]
+    else:
+        if q - 0.01 - (0.03 if fd == 'low' else 0.06) < wr_floor + MIN_G + CW + MIN_SW + BW + MIN_INU:
+            fd = 'low'; found_mat = 'conc'          # 余裕が無い所は、基礎の出が小さい方
+        prot = 0.03 if fd == 'low' else 0.06
+        avail = q - 0.01 - prot                     # 基礎の前面(o_w)の目標
+        chosen = None
+        for ln_ in range(lanes_w, 0, -1):
+            for lw in (3.25, 3.0, 2.75, 2.6):
+                Wr = ln_ * lw
+                if Wr < wr_floor - 1e-9:
+                    continue
+                sw_av = avail - (Wr + 0.30 + CW + BW + 0.45)
+                if sw_av >= min(sw_def, 2.0):
+                    chosen = (ln_, lw, 0.30, 0.45, sw_av); break
+            if chosen:
+                break
+        if chosen is None:                          # いちばん狭い断面に詰める
+            sw_av = avail - (wr_floor + MIN_G + CW + BW + MIN_INU)
+            chosen = (1, wr_floor, MIN_G, MIN_INU, max(sw_av, MIN_SW))
+        lanes, lane_w, g, inu, sw_av = chosen
+        sw = min(sw_def, sw_av)
+        sw = max(MIN_SW, math.floor(sw * 4.0 + 1e-9) / 4.0)
+        setback = min(8.0, max(0.0, math.floor((sw_av - sw) * 100.0) / 100.0))
+    major_w = cls in MAJOR
+    toff = 0.60 if sw >= 1.5 else (0.30 if sw >= 1.0 else 0.15)
+    kw = dict(lanes=lanes, lane_w=float(lane_w), gutter=float(g), inu_w=float(inu), sidewalk_w=float(round(sw, 3)), foundation=fd, found_mat=found_mat, setback=float(round(setback, 3)),
+              tactile_off=toff, trees=bool(major_w and sw >= 2.9), fence=bool(major_w and sw >= 1.8), paving='block' if major_w or cls == 'tertiary' else 'asphalt',
+              lamp_pitch=25.0 if major_w else 30.0, pole_pitch=40.0, signal_at=[], smooth=False, sides='L', found_gaps=found_gaps,
+              center_line='yellow' if lanes >= 2 else 'white')
+    return kw
+
+
+def ultra_info(kw, night, hour):
+    """遠い道路(帯で描く)の、断面の値。 street_kit の info と同じ名前で返す。 -> (P, info)"""
+    P = sk.params(None, **dict(kw, night=night, hour=hour))
+    Wr = P['lanes'] * P['lane_w']; o_c0 = Wr + P['gutter']; sw0 = o_c0 + P['curb_w']; o_b0 = sw0 + P['sidewalk_w']
+    tac0 = sw0 + P['tactile_off']; o_w = o_b0 + P['boundary_w'] + P['setback'] + (P['inu_w'] if P['foundation'] != 'flush' else 0.0)
+    prot = {'low': 0.03, 'wainscot': 0.06, 'flush': 0.0}[P['foundation']]
+    info = dict(half_road=Wr, lane_w=P['lane_w'], sidewalk_o0=sw0, boundary_o=o_b0, tactile=(tac0, tac0 + P['tactile_w']), curb_o=o_c0, found_front=o_w, wall_plane=o_w + prot,
+                sidewalk_w=P['sidewalk_w'], sw_h=P['sw_h'], profile=P['foundation'])
+    return P, info
+
+
+class RectIndex:
+    """建物の矩形(4隅)を、外接箱の格子で引く"""
+    def __init__(self, polys, cell=30.0):
+        self.polys = polys; self.cell = cell; self.grid = {}
+        for i, P in enumerate(polys):
+            x0, y0 = P.min(0); x1, y1 = P.max(0)
+            for ix in range(int(x0 // cell), int(x1 // cell) + 1):
+                for iy in range(int(y0 // cell), int(y1 // cell) + 1):
+                    self.grid.setdefault((ix, iy), []).append(i)
+
+    def near(self, x0, y0, x1, y1):
+        idx = set()
+        for ix in range(int(x0 // self.cell), int(x1 // self.cell) + 1):
+            for iy in range(int(y0 // self.cell), int(y1 // self.cell) + 1):
+                idx.update(self.grid.get((ix, iy), ()))
+        return idx
+
+
+def fit_side(cls, w, q, rng_args, line, ri_idx, polys_index):
+    """片側の断面を決め、その通行帯(中心線〜基礎の前面)に建物の矩形が入っていないか検証して、入っていれば壁を後退させて決め直す(最大4回)。 -> (kw, info, P)"""
+    seed, sd, salt = rng_args
+    qq = q; kw = None
+    for _ in range(5):
+        kw = side_params(cls, w, qq, rng_for(seed, sd, salt))
+        P, info = ultra_info(dict(kw, night=True, hour=20.0), True, 20.0)
+        if polys_index is None or q is None:
+            break
+        ri, polys = polys_index
+        c = Corridor(); c.add_strip(line, 0.0, info['found_front'])
+        S = line
+        cand = ri.near(S[:, 0].min() - info['found_front'], S[:, 1].min() - info['found_front'], S[:, 0].max() + info['found_front'], S[:, 1].max() + info['found_front'])
+        pen = 0.0
+        t = np.gradient(S, axis=0); t /= (np.hypot(t[:, 0], t[:, 1])[:, None] + 1e-9); nrm = np.stack([-t[:, 1], t[:, 0]], 1)
+        for i in cand:
+            ov, a = c.overlap(polys[i], 1e-4)
+            for pg in ov:
+                D = np.hypot(pg[:, None, 0] - S[None, :, 0], pg[:, None, 1] - S[None, :, 1]); j = D.argmin(1)
+                lat = ((pg - S[j]) * nrm[j]).sum(1)
+                pen = max(pen, info['found_front'] - float(lat.min()))
+        if pen <= 1e-6:
+            break
+        qq = (qq if qq is not None else info['wall_plane']) - pen - 0.03
+    return kw
+
+
+def plan_streets(pieces, bg, cam, seed, pol, night, hour, rect_polys=None):
+    """道路の区間ごとに、建物の壁までの距離(bg.clearance)から断面を決め、近い順に near / mid / far(street_kit の形)・ultra(帯だけで軽く)・band(路地)に分ける。
+    断面の通行帯(中心線〜基礎の前面)に建物の矩形が入る所は、壁を後退させて決め直す。 各区間 = 片側ずつ(進行方向の左 / 逆向きの左 = 右)。 bpy 不要。 -> dict(groups, ultra, bands, pinfo, near_m, mid_m)"""
+    groups = {'near': [], 'mid': [], 'far': []}; ultra = []; bands = []; pinfo = []
+    near_m = mid_m = 0.0
+    pidx = (RectIndex(rect_polys), rect_polys) if rect_polys else None
+    for pc in sorted(pieces, key=lambda p: p['dc']):
+        S = pc['S']; cls = pc['cls']; w = pc['w']; dc = pc['dc']
+        qL, qR = bg.clearance(S)
+        pinfo.append(dict(S=S, cls=cls, w=w, qL=qL, qR=qR, dc=dc, band=pc['band']))
+        if pc['band']:
+            hl = w / 2.0 if qL is None else min(w / 2.0, max(0.9, qL - 0.10))
+            hr = w / 2.0 if qR is None else min(w / 2.0, max(0.9, qR - 0.10))
+            bands.append(dict(S=S, hl=hl, hr=hr, w=w, cls=cls)); continue
+        length = 4.0 * (len(S) - 1)
+        if dc > pol['street_far']:
+            d = 'ultra'
+        else:
+            d = 'far'
+            if dc <= pol['street_near'] and near_m < pol['max_street_near_m']:
+                d = 'near'; near_m += length
+            elif dc <= pol['street_mid'] and mid_m < pol['max_street_mid_m']:
+                d = 'mid'; mid_m += length
+        sd = int(pc['ri'] * 131 + round(S[0][0]) * 7 + round(S[0][1]) * 13) & 0xffff
+        for side, q, line in (('L', qL, S), ('R', qR, S[::-1])):
+            line = np.asarray(line, float)
+            kw = fit_side(cls, w, q, (seed, sd, 5 if side == 'L' else 6), line, 0, pidx)
+            kw.update(night=night, hour=hour, lights=False)
+            if d in ('far', 'ultra') and dc > pol['far_fence_dist']:
+                kw['fence'] = False
+            if d == 'ultra':
+                P, info = ultra_info(kw, night, hour)
+                ultra.append(dict(line=line, P=P, info=info, dc=dc, cls=cls, side=side, o_w=info['found_front'], wall=info['wall_plane'], q=q))
+                continue
+            cl = [(float(x), float(y), 0.0) for x, y in line]
+            md, info, lamps, Pp = sk.build_geometry(kw, cl, 1e9, sd, d, **{})
+            groups[d].append(dict(md=md, info=info, P=Pp, lamps=lamps, dc=dc, cls=cls, side=side, line=line, o_w=info['found_front'], wall=info['wall_plane'], q=q))
+    return dict(groups=groups, ultra=ultra, bands=bands, pinfo=pinfo, near_m=near_m, mid_m=mid_m)
+
+
+def street_items(sp):
+    return [it for d in ('near', 'mid', 'far') for it in sp['groups'][d]] + sp['ultra']
+
+
+# ------------------------------------------------------------------------------------------------
+# 建物の足元(犬走り・基礎の立ち上がり)。 全部の建物の全部の壁に付ける
+# ------------------------------------------------------------------------------------------------
+APRON_Z = 0.07          # 犬走りの上面(歩道面 0.05・街路の犬走り 0.062 より少し上。 z の重なりを避ける)
+PLINTH_TOP = 0.34       # far・低層の基礎の立ち上がりの上端
+
+
+def final_clip(plan, sp):
+    """描く通行帯(断面の実際の幅)と、まだ重なっている建物の矩形を、辺を動かして削る(足りなければ描かない)。 near/mid は箱を縮められないので far にする。 -> 削った数"""
+    corr = Corridor()
+    for it in street_items(sp):
+        corr.add_strip(it['line'], 0.0, it['o_w'])
+    for bd in sp['bands']:
+        corr.add_strip(bd['S'], bd['hr'], bd['hl'])
+    n = 0; keep = []
+    for r in plan['recs']:
+        th = r['theta']; xd = np.array([math.cos(th), math.sin(th)]); yd = np.array([-math.sin(th), math.cos(th)])
+        ov, a = corr.overlap(rect_poly(r['c'], xd, yd, r['wf'], r['df']), 1e-4)
+        if ov:
+            n += 1
+            res = clip_rect(r['c'], xd, yd, r['wf'], r['df'], corr, min_side=2.5, tol=1e-4)
+            if res is None:
+                continue
+            r['c'] = (float(res[0][0]), float(res[0][1])); r['wf'] = float(res[1]); r['df'] = float(res[2])
+            r['sx'] = r['wf'] / r['W']; r['sy'] = r['df'] / r['D']; r['detail'] = 'far'
+        keep.append(r)
+    plan['recs'] = keep
+    keeph = []
+    for hh in plan['houses']:
+        u = np.asarray(hh['u'], float); v = np.array([-u[1], u[0]])
+        ov, a = corr.overlap(rect_poly(hh['c'], u, v, hh['eu'], hh['ev']), 1e-4)
+        if ov:
+            n += 1
+            res = clip_rect(hh['c'], u, v, hh['eu'], hh['ev'], corr, min_side=2.5, tol=1e-4)
+            if res is None:
+                continue
+            hh['c'] = (float(res[0][0]), float(res[0][1])); hh['eu'] = float(res[1]); hh['ev'] = float(res[2])
+        keeph.append(hh)
+    plan['houses'] = keeph
+    return n
+
+
+def plan_aprons(fps, items, pol):
+    """各建物の矩形の4つの壁の外側に、犬走り(幅0.45m。道路の歩道の壁の位置より壁が奥にあるときは、その隙間も埋める。 最大8m)を作る。
+    far・低層には、壁の手前0.012mに基礎の立ち上がり(高さ0.07〜0.34m)も付ける。 -> dict(apron=[(4点(x,y), z)], plinth=[(a(2,), b(2,))], faces=面数, road_faces=道路に面した面数)"""
+    WP = []; WN = []; grid = {}; cell = 20.0
+    for it in items:
+        line = it['line']
+        if len(line) < 2:
+            continue
+        t = np.gradient(line, axis=0); t /= (np.hypot(t[:, 0], t[:, 1])[:, None] + 1e-9); n = np.stack([-t[:, 1], t[:, 0]], 1)
+        P = line + n * it['wall']
+        for k in range(0, len(P), 1):
+            grid.setdefault((int(P[k, 0] // cell), int(P[k, 1] // cell)), []).append(len(WP)); WP.append(P[k]); WN.append(n[k])
+    WP = np.asarray(WP, float).reshape(-1, 2); WN = np.asarray(WN, float).reshape(-1, 2)
+    apron = []; plinth = []; road_faces = 0; nfaces = 0
+    for bid, kind, detail, poly in fps:
+        for k in range(4):
+            a = poly[k]; b = poly[(k + 1) % 4]; e = b - a; L = float(np.hypot(*e))
+            if L < 0.3:
+                continue
+            e = e / L; nu = np.array([e[1], -e[0]]); m = (a + b) / 2.0
+            nfaces += 1
+            wd = 0.45
+            idx = []
+            gx, gy = int(m[0] // cell), int(m[1] // cell)
+            for ix in range(gx - 1, gx + 2):
+                for iy in range(gy - 1, gy + 2):
+                    idx += grid.get((ix, iy), [])
+            if idx:
+                idx = np.asarray(idx)
+                dist = np.hypot(WP[idx, 0] - m[0], WP[idx, 1] - m[1])
+                face = (WN[idx] @ (-nu)) > 0.9
+                if face.any() and dist[face].min() < 14.0:
+                    i = idx[face][int(np.argmin(dist[face]))]
+                    d = float((m - WP[i]) @ WN[i])
+                    road_faces += 1
+                    if 0.02 < d <= 8.0:
+                        wd = min(8.0, d + 0.45)
+            ex = 0.45
+            apron.append(([a - e * ex, b + e * ex, b + e * ex + nu * wd, a - e * ex + nu * wd], APRON_Z))
+            if kind != 'kit' or detail == 'far':
+                plinth.append((a + nu * 0.012, b + nu * 0.012))
+    return dict(apron=apron, plinth=plinth, faces=nfaces, road_faces=road_faces)
+
+
+# ------------------------------------------------------------------------------------------------
+# 通行帯と建物の重なり(面積)を測る
+# ------------------------------------------------------------------------------------------------
+def measure_overlap(fps, sp):
+    """描く建物の足元の矩形と、描く通行帯(車道〜縁石〜歩道〜空地〜犬走り。 中心線から基礎の前面まで)の交差面積。 目標 0。
+    路地・歩行者道の帯は、中心線から帯の端まで。 -> dict"""
+    corr = Corridor()
+    for it in street_items(sp):
+        corr.add_strip(it['line'], 0.0, it['o_w'])
+    for bd in sp['bands']:
+        corr.add_strip(bd['S'], bd['hr'], bd['hl'])
+    total = 0.0; nbad = 0; worst = []; foot = 0.0
+    for bid, kind, detail, poly in fps:
+        foot += poly_area(poly)
+        ov, a = corr.overlap(poly, 1e-4)
+        total += a
+        if a > 0.05:
+            nbad += 1; worst.append((round(a, 2), int(bid), kind))
+    worst.sort(reverse=True)
+    items = street_items(sp)
+    sw = np.asarray([it['info']['sidewalk_w'] for it in items], float) if items else np.zeros(0)
+    res = dict(overlap_area_m2=round(total, 3), buildings_overlapping=nbad, buildings=len(fps), footprint_area_m2=round(foot, 1),
+               overlap_ratio=round(total / max(foot, 1.0), 5), worst=worst[:8], strips=len(items), bands=len(sp['bands']))
+    if len(sw):
+        res['sidewalk_w_m'] = dict(min=round(float(sw.min()), 2), p10=round(float(np.percentile(sw, 10)), 2), median=round(float(np.median(sw)), 2), max=round(float(sw.max()), 2),
+                                   under_075=int((sw < 0.75 - 1e-6).sum()))
+    return res
+
+
+def plan_all(city, center, radius, cam, hour, seed, policy=None):
+    """建物・道路・足元の計画を全部まとめて作る(bpy 不要)。 -> dict(recs, houses, kinds, streets, aprons, fps, overlap, ...)
+    policy['legacy'] = True なら、修正前の方式(壁までの距離は頂点の中央値・60mの区間・矩形は外接矩形の縮小・足元の犬走りなし)。比較・数値確認用。"""
+    pol = dict(DEFAULT_POLICY); pol.update(policy or {})
+    legacy = bool(pol.get('legacy'))
+    if legacy:
+        pol.update(solid_scale=(0.80, 1.25), piece_steps=15)
+    night = bool(hour >= 17.0 or hour < 5.5)
+    cam_a = None
+    if cam is not None and len(cam):
+        cam_a = np.asarray([(p[0], p[1]) for p in cam], float)
+    t0 = time.time()
+    ridx = RoadIndex(city['roads'])
+    if legacy:
+        plan = plan_buildings(city, center, radius, cam_a, hour, seed, pol, ridx, corr=None)
+        fps = footprints(plan)
+        sp = plan_streets_legacy(city, center, radius, cam_a, seed, pol, VertexGrid(city), night, hour)
+        aprons = dict(apron=[], plinth=[], faces=0, road_faces=0)
+    else:
+        pieces = road_pieces(city, center, radius, cam_a, pol)
+        corr = min_corridor(pieces)
+        plan = plan_buildings(city, center, radius, cam_a, hour, seed, pol, ridx, corr=corr)
+        fps = footprints(plan)
+        bg = BoundaryGrid([f[3] for f in fps])
+        sp = plan_streets(pieces, bg, cam_a, seed, pol, night, hour, rect_polys=[f[3] for f in fps])
+        plan['final_clipped'] = final_clip(plan, sp)
+        fps = footprints(plan)
+        aprons = plan_aprons(fps, street_items(sp), pol) if pol.get('apron', True) else dict(apron=[], plinth=[], faces=0, road_faces=0)
+    ov = measure_overlap(fps, sp)
+    plan.update(streets=sp, aprons=aprons, fps=fps, overlap=ov, night=night, t_plan_all=round(time.time() - t0, 1), legacy=legacy, cam=cam_a)
+    return plan
+
 
 
 # ================================================================================================
@@ -971,6 +1578,35 @@ def make_tree_protos(mat_leaf, mat_trunk):
     return out
 
 
+def ultra_quads(it, smat, stride):
+    """150mより遠い道路の片側を、4つの帯(車道・縁石・歩道・犬走り)と基礎の立ち上がり1枚にした形。 -> V(n*4,3), UV(n*4,2), mi(n)"""
+    line = it['line']; info = it['info']; P = it['P']
+    idx = list(range(0, len(line), max(1, int(stride))))
+    if idx[-1] != len(line) - 1:
+        idx.append(len(line) - 1)
+    L = line[idx]
+    if len(L) < 2:
+        return np.zeros((0, 3)), np.zeros((0, 2)), []
+    t = np.gradient(L, axis=0); t /= (np.hypot(t[:, 0], t[:, 1])[:, None] + 1e-9); n = np.stack([-t[:, 1], t[:, 0]], 1)
+    cum = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(L, axis=0).T))])
+    Wr = info['half_road']; sw0 = info['sidewalk_o0']; o_b0 = info['boundary_o']; o_w = info['found_front']
+    mats = {r_: smat.get(r_, info, P) for r_ in ('road', 'curb', 'sidewalk', 'inuhashiri', 'found_conc')}
+    V = []; UV = []; mi = []
+    bands_ = ((0.0, Wr, 0.0, 'road'), (Wr, sw0, 0.10, 'curb'), (sw0, o_b0, 0.05, 'sidewalk'), (o_b0, o_w, 0.062, 'inuhashiri'))
+    for i in range(len(L) - 1):
+        s0, s1 = cum[i], cum[i + 1]
+        for o0, o1, z, role in bands_:
+            if o1 - o0 < 1e-3:
+                continue
+            V += [(L[i, 0] + n[i, 0] * o0, L[i, 1] + n[i, 1] * o0, z), (L[i + 1, 0] + n[i + 1, 0] * o0, L[i + 1, 1] + n[i + 1, 1] * o0, z),
+                  (L[i + 1, 0] + n[i + 1, 0] * o1, L[i + 1, 1] + n[i + 1, 1] * o1, z), (L[i, 0] + n[i, 0] * o1, L[i, 1] + n[i, 1] * o1, z)]
+            UV += [(s0, o0), (s1, o0), (s1, o1), (s0, o1)]; mi.append(mats[role])
+        V += [(L[i, 0] + n[i, 0] * o_w, L[i, 1] + n[i, 1] * o_w, 0.062), (L[i + 1, 0] + n[i + 1, 0] * o_w, L[i + 1, 1] + n[i + 1, 1] * o_w, 0.062),
+              (L[i + 1, 0] + n[i + 1, 0] * o_w, L[i + 1, 1] + n[i + 1, 1] * o_w, 0.30), (L[i, 0] + n[i, 0] * o_w, L[i, 1] + n[i, 1] * o_w, 0.30)]
+        UV += [(s0, 0.062), (s1, 0.062), (s1, 0.30), (s0, 0.30)]; mi.append(mats['found_conc'])
+    return np.asarray(V, float), np.asarray(UV, float), mi
+
+
 # ================================================================================================
 # 本体
 # ================================================================================================
@@ -994,11 +1630,11 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
 
     # --- 計画
     t = time.time()
-    ridx = RoadIndex(city['roads'])
-    plan = plan_buildings(city, center, radius, cam, hour, seed, pol, ridx)
-    vg = VertexGrid(city)
-    sp = plan_streets(city, center, radius, cam, seed, pol, vg, night, hour)
+    plan = plan_all(city, center, radius, cam, hour, seed, pol)
+    sp = plan['streets']; aprons = plan['aprons']
     st['t_plan'] = round(time.time() - t, 1)
+    st['overlap'] = plan['overlap']; st['rects'] = dict(fitted=plan['rect_fitted'], clipped=plan['rect_clipped'], dropped=plan['rect_dropped'], final_clipped=plan.get('final_clipped', 0))
+    st['aprons'] = dict(faces=aprons['faces'], road_faces=aprons['road_faces'], apron_quads=len(aprons['apron']), plinth_quads=len(aprons['plinth']))
     recs = plan['recs']
     far = [r for r in recs if r['detail'] == 'far']; solid = [r for r in recs if r['detail'] != 'far']
     st['kinds_all'] = dict(plan['kinds']); st['detail_counts'] = {d: sum(1 for r in recs if r['detail'] == d) for d in ('near', 'mid', 'far')}
@@ -1083,6 +1719,28 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
             else:
                 for lp in it['lamps']:
                     lights.append((float(np.hypot(*(cam - np.array(lp[:2])).T).min()) if cam is not None else 0.0, lp))
+    # 150mより遠い道路: 車道・縁石・歩道・犬走り・基礎の立ち上がりの帯(街灯・木・柵は無し)
+    nultra = 0
+    for it in sp['ultra']:
+        V, UV, mi = ultra_quads(it, smat, pol['ultra_stride'])
+        if len(V):
+            sa.add(V, UV, [4] * (len(V) // 4), mi); nultra += len(V) // 4
+    # 建物の足元: 犬走り(全部の壁)と基礎の立ち上がり(far・低層)
+    P0, info0 = ultra_info(side_params('tertiary', 8.0, 6.0, random.Random(0)), night, hour)
+    mi_inu = smat.get('inuhashiri', info0, P0); mi_fnd = smat.get('found_conc', info0, P0)
+    if aprons['apron']:
+        Va = []; UVa = []
+        for pts, z in aprons['apron']:
+            for p in pts:
+                Va.append((float(p[0]), float(p[1]), z)); UVa.append((float(p[0]), float(p[1])))
+        sa.add(Va, UVa, [4] * len(aprons['apron']), [mi_inu] * len(aprons['apron']))
+    if aprons['plinth']:
+        Vp = []; UVp = []; sp_ = 0.0
+        for a_, b_ in aprons['plinth']:
+            L_ = float(np.hypot(*(b_ - a_)))
+            Vp += [(a_[0], a_[1], APRON_Z), (b_[0], b_[1], APRON_Z), (b_[0], b_[1], PLINTH_TOP), (a_[0], a_[1], PLINTH_TOP)]
+            UVp += [(sp_, APRON_Z), (sp_ + L_, APRON_Z), (sp_ + L_, PLINTH_TOP), (sp_, PLINTH_TOP)]; sp_ += L_
+        sa.add(Vp, UVp, [4] * len(aprons['plinth']), [mi_fnd] * len(aprons['plinth']))
     # 近景の街灯の実ライト(上限あり)。 残りは光だまり
     lights.sort(key=lambda a: a[0]); lit_pos = [lp for _, lp in lights[:pol['street_lights']]]
     for _, lp in lights[pol['street_lights']:]:
@@ -1094,7 +1752,7 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
     if not sa.empty():
         sa.build('CityStreets', smat.list, None, parent=root, location=(0, 0, ground_z))
         tris['streets'] = sa.tris()
-    st['street_faces'] = nstreet; st['street_materials'] = len(smat.list); st['lamp_lights'] = len(lit_pos); st['lamp_pools'] = len(pools)
+    nstreet['ultra'] = nultra; st['street_faces'] = nstreet; st['street_materials'] = len(smat.list); st['lamp_lights'] = len(lit_pos); st['lamp_pools'] = len(pools)
     if night and pools:
         pm = pool_material(cx, pool_emit); pa = Acc()
         for p in pools:
@@ -1112,14 +1770,16 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
     ga.build('CityGround', [gm], None, parent=root, location=(0, 0, ground_z))
     bm_ = ground_material(cx, 'city_road_band', (0.075, 0.075, 0.078), 0.82)
     ba = Acc(); nb_ = 0
-    for seg, w, cls in sp['bands']:
+    for bd in sp['bands']:
+        seg = bd['S']; w = bd['w']; cls = bd['cls']; hl = bd['hl']; hr = bd['hr']
         for (x1, y1), (x2, y2) in zip(seg[:-1], seg[1:]):
             L = math.hypot(x2 - x1, y2 - y1)
             if L < 0.3:
                 continue
-            nx, ny = (y2 - y1) / L * w / 2, -(x2 - x1) / L * w / 2; ex, ey = (x2 - x1) / L * w * 0.25, (y2 - y1) / L * w * 0.25
+            tx, ty = (x2 - x1) / L, (y2 - y1) / L; nx, ny = -ty, tx; e_ = min(0.25 * w, 1.0)
             z = 0.03 if cls not in ('service', 'pedestrian') else 0.05
-            ba.add([(x1 - nx - ex, y1 - ny - ey, z), (x1 + nx - ex, y1 + ny - ey, z), (x2 + nx + ex, y2 + ny + ey, z), (x2 - nx + ex, y2 - ny + ey, z)], [(0, 0), (1, 0), (1, 1), (0, 1)], [4], [0]); nb_ += 1
+            ba.add([(x1 - tx * e_ - nx * hr, y1 - ty * e_ - ny * hr, z), (x2 + tx * e_ - nx * hr, y2 + ty * e_ - ny * hr, z),
+                    (x2 + tx * e_ + nx * hl, y2 + ty * e_ + ny * hl, z), (x1 - tx * e_ + nx * hl, y1 - ty * e_ + ny * hl, z)], [(0, 0), (1, 0), (1, 1), (0, 1)], [4], [0]); nb_ += 1
     if not ba.empty():
         ba.build('CityRoadBands', [bm_], None, parent=root, location=(0, 0, ground_z))
     tris['ground'] = 2 + 2 * nb_
@@ -1227,11 +1887,10 @@ def spec_report(city_json_path, center=(0.0, 700.0), radius=800.0, cam=None, hou
     rows.append(('点字ブロック', '30cm角・黄・縁石から約0.6m(★寸法/推位置)', '縁石から %.2fm〜%.2fm(幅0.30m)' % (sec['tactile'][0] - sec['sidewalk_o0'], sec['tactile'][1] - sec['sidewalk_o0']), '合っている'))
     rows.append(('植樹・街灯・ガードパイプ', '高木10m間隔・街灯高6〜10m・柵の上端0.6〜1.0m(★/推)', '木 10m間隔・街灯 8m(25〜30m間隔)・柵 上端0.9m(2段)', '合っている'))
     if camp is not None:
-        stp = plan_streets(city, center, radius, camp, seed, pol, VertexGrid(city), True, 19.0)
+        stp = plan_all(city, center, radius, camp, 19.0, seed, policy)['streets']
         swv = []; fnd = {'low': 0, 'wainscot': 0, 'flush': 0}
-        for d in ('near', 'mid', 'far'):
-            for it in stp['groups'][d]:
-                swv.append(it['info']['sidewalk_w']); fnd[it['P']['foundation']] += 1
+        for it in street_items(stp):
+            swv.append(it['info']['sidewalk_w']); fnd[it['P']['foundation']] += 1
         swv = np.asarray(swv)
         raw['sidewalk_w_pcts'] = [float(x) for x in np.percentile(swv, [5, 25, 50, 75, 95])]; raw['found_counts'] = fnd
         ok = float((swv >= 2.0).mean())
