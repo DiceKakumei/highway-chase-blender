@@ -224,7 +224,7 @@ def bike_pose(bid, t):
 def shot_index(t):
     for i, c in enumerate(CUTS):
         if t < c:
-            return i
+            return 1 if i == 2 else i      # 4.4〜6.0秒の「Bの前輪アップ」はカット(ユーザー指示)。2カット目(Aの背後を低く)を6.0秒まで延ばす
     return len(CUTS)
 
 
