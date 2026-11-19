@@ -863,7 +863,7 @@ def dirt_socket(nb, u, v, C, streak=True):
         fl = nb.m('FLOOR', nb.m('DIVIDE', v1, Hf))
         hv = nb.white(cellf, fl, sd); hv2 = nb.white(cellf, fl, sd + 11.0)
         on = nb.m('GREATER_THAN', hv, 0.30)                                       # 筋が出ない窓もある
-        wmax = nb.m('ADD', 0.05, nb.m('MULTIPLY', nz(1.7, 0.5, 2.0), 0.16))       # 窓の隅の筋の太さ
+        wmax = nb.m('ADD', 0.08, nb.m('MULTIPLY', nz(1.7, 0.5, 2.0), 0.28))       # 窓の隅の筋の太さ
         line = 0.0
         for e in C['edges']:
             d = nb.m('ABSOLUTE', nb.m('SUBTRACT', um, e))
@@ -873,7 +873,7 @@ def dirt_socket(nb, u, v, C, streak=True):
         decay = nb.sstep(dsill, ls, 0.0)
         tex = nb.m('ADD', 0.35, nb.m('MULTIPLY', nz(6.0, 0.22, 4.0), 1.1), clamp=True)
         terms.append(nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', line, decay), on), tex), 2.6))
-        gen = nb.m('MULTIPLY', nb.m('MULTIPLY', nb.sstep(nz(9.0, 0.12, 4.0), 0.52, 0.80), decay), 0.9)      # 窓台の幅いっぱいに流れる細い筋
+        gen = nb.m('MULTIPLY', nb.m('MULTIPLY', nb.sstep(nz(9.0, 0.12, 4.0), 0.42, 0.62), decay), 0.9)      # 窓台の幅いっぱいに流れる細い筋
         terms.append(nb.m('MULTIPLY', gen, nb.m('MULTIPLY', nb.m('GREATER_THAN', hv2, 0.25), 1.0)))
     broad = nb.m('MULTIPLY', nb.sstep(nz(0.55, 0.12, 3.0), 0.45, 0.80), 0.30)        # 大きな縦のムラ
     terms.append(broad)
@@ -899,7 +899,7 @@ def mat_wall(C, name, base, tile=False, streak=True, dirt_k=1.0, rough=0.88):
     b = principled(nt)
     u, v = nb.uv()
     far = C['detail'] == 'far'
-    dirt = nb.m('MULTIPLY', dirt_socket(nb, u, v, C, streak), dirt_k * (1.0 if tile else 1.4), clamp=True)       # タイルは汚れにくい★(塗装・吹付けは強く)
+    dirt = nb.m('MULTIPLY', dirt_socket(nb, u, v, C, streak), dirt_k * (1.3 if tile else 1.4), clamp=True)       # タイルは汚れにくい★(塗装・吹付けは強く)
     A = C['A']
     sd = C['seed'] * 1.713 + 0.37
     if tile and not far:
@@ -1021,7 +1021,7 @@ def mat_room(C, name, part, rkind):
             cov = nb.m('LESS_THAN', v, nb.m('MULTIPLY', B, 1.8))
             slat = nb.m('ADD', 0.55, nb.m('MULTIPLY', nb.m('LESS_THAN', nb.m('FRACT', nb.m('DIVIDE', v, 0.028)), 0.72), 0.45))
             mask = nb.m('MULTIPLY', cov, nb.m('GREATER_THAN', slat, 0.0))
-            sh_e = emit_shader(nb, T, I, nb.m('MULTIPLY', nb.m('MULTIPLY', I, E), nb.m('MULTIPLY', slat, 0.8)))
+            sh_e = emit_shader(nb, T, I, nb.m('MULTIPLY', nb.m('MULTIPLY', I, E), nb.m('MULTIPLY', slat, 0.5)))
         else:                                                                        # カーテン(左右の布。色は住戸ごと)
             cw = nb.m('MULTIPLY', B, 0.82)
             cov = nb.m('MAXIMUM', nb.m('LESS_THAN', u, cw), nb.m('GREATER_THAN', u, nb.m('SUBTRACT', 1.65, cw)))
@@ -1247,7 +1247,7 @@ def _litmap_image(name, lit):
     return img
 
 
-def make_building(kind, width, depth, floors, seed=0, detail='near', night=True, hour=20.0, age=None, name=None, emit=1.5, collection=None):
+def make_building(kind, width, depth, floors, seed=0, detail='near', night=True, hour=20.0, age=None, name=None, emit=0.9, collection=None):
     """ビル1棟を作る。 -> 親Empty(子 = メッシュ)。 kind: 'office' | 'zakkyo' | 'mansion'(日本語名も可)。
     width/depth はモジュールの整数倍に丸める。 hour = 夜の時刻(窓の点灯率)。 age = 0(新築)〜1(築40年超)、省略時は種類と seed から。
     emit = 窓の明るさ(発光の強さ)。 collection = 入れる Collection(省略時は現在のシーン)。"""

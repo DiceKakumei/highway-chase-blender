@@ -13,7 +13,7 @@ import building_kit as bk
 ARGV = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else ['out']
 OUT = ARGV[0]; os.makedirs(OUT, exist_ok=True)
 PRM = json.load(open(ARGV[1])) if len(ARGV) > 1 else {}
-PART = PRM.get('part', 'all'); SAMPLES = int(PRM.get('samples', 32)); RES = PRM.get('res', [960, 640]); EMIT = float(PRM.get('emit', 1.3))
+PART = PRM.get('part', 'all'); SAMPLES = int(PRM.get('samples', 32)); RES = PRM.get('res', [960, 640]); EMIT = float(PRM.get('emit', 0.9))
 ONLY = PRM.get('shots')
 
 
