@@ -268,7 +268,7 @@ def render_main(argv):
     me.from_pydata([(-R, -R, TABLE_Z), (R, -R, TABLE_Z), (R, R, TABLE_Z), (-R, R, TABLE_Z)], [], [(0, 1, 2, 3)]); me.update()
     tb = bpy.data.objects.new('table', me); sc.collection.objects.link(tb)
     mt = bpy.data.materials.new('table_m'); mt.use_nodes = True; b = mt.node_tree.nodes['Principled BSDF']
-    b.inputs['Base Color'].default_value = (0.055, 0.057, 0.062, 1); b.inputs['Roughness'].default_value = 0.5; b.inputs['Metallic'].default_value = 0.0
+    b.inputs['Base Color'].default_value = (0.055, 0.057, 0.062, 1); b.inputs['Roughness'].default_value = 0.8; b.inputs['Metallic'].default_value = 0.0
     me.materials.append(mt)
 
     # ---- 3 灯(キー・フィル・リム)。 灯りは映らないようにする
@@ -338,7 +338,7 @@ def render_main(argv):
     mf = bpy.data.materials.new('MuzzleFlash'); mf.use_nodes = True; nt = mf.node_tree
     for n_ in list(nt.nodes):
         nt.nodes.remove(n_)
-    em = nt.nodes.new('ShaderNodeEmission'); em.inputs['Color'].default_value = (1.0, 0.72, 0.30, 1); em.inputs['Strength'].default_value = 110.0
+    em = nt.nodes.new('ShaderNodeEmission'); em.inputs['Color'].default_value = (1.0, 0.72, 0.30, 1); em.inputs['Strength'].default_value = 28.0
     oo = nt.nodes.new('ShaderNodeOutputMaterial'); nt.links.new(em.outputs[0], oo.inputs['Surface'])
     V, Fc = [], []
 
@@ -356,7 +356,7 @@ def render_main(argv):
     fo = bpy.data.objects.new('flash', fme); sc.collection.objects.link(fo); fo.location = MUZZLE
     fl = bpy.data.lights.new('flashL', 'POINT'); fl.energy = 0.0; fl.color = (1.0, 0.75, 0.4); fl.shadow_soft_size = 0.03
     flo = bpy.data.objects.new('flashL', fl); sc.collection.objects.link(flo); flo.parent = fo; flo.location = (0, 0.12, 0)
-    FS = 1.0; FE = 1.5
+    FS = 0.75; FE = 1.5
     fo.scale = (0.001,) * 3; fo.keyframe_insert('scale', frame=-5); fl.energy = 0.0; fl.keyframe_insert('energy', frame=-5)
     for sh in SHOTS:
         F = sh['F']
