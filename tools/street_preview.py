@@ -300,7 +300,7 @@ def draw_section(path):
     Image, ImageDraw, ImageFont = get_pil()
     f_s, ja = find_font(ImageFont, 15); f_m, _ = find_font(ImageFont, 19); f_l, _ = find_font(ImageFont, 26)
     L = (lambda j, e: j) if ja else (lambda j, e: e)
-    W_, H_ = 1700, 2400
+    W_, H_ = 1700, 2700
     img = Image.new('RGB', (W_, H_), (245, 243, 238)); d = ImageDraw.Draw(img)
     d.text((24, 14), L('道路の断面キット: 車道の中心から1階の壁まで(切り口。マットなベタ塗り・寸法はm)', 'street_kit cross-section: road centre to ground-floor wall (m)'), fill=(20, 20, 20), font=f_l)
     # ---- 全体
@@ -339,19 +339,19 @@ def draw_section(path):
              ('wainscot', 'stone', 0.0, 'B: 化粧の腰(石) GL+0.70(推0.45〜0.9)', 'B: stone wainscot GL+0.70'),
              ('flush', 'conc', 1.5, 'C: 歩道と同じ高さ 段差2cm・セットバック1.5m', 'C: flush, 2cm step, setback 1.5m')]
     kinds = ['glass', 'tile', 'entrance']
-    zs = 330.0; top = 720; PH = 560
+    zs = 330.0; top = 720; PH = 640
     for n, (fd, fm, sbk, ja_t, en_t) in enumerate(types):
         md, I, fmd, FI = section_data(fd, fm, sbk, kinds[n])
         seg = slice_md(md, 15.0)
         y_lo = I['curb_o'] - 0.35; y_hi = I['wall_plane'] + 1.25; scz = min(1500.0 / (y_hi - y_lo), 200.0)
-        ox2 = 60; oz2 = top + n * PH + 520; scx = scz; scz = scz * 2.5
+        ox2 = 60; oz2 = top + n * PH + 570; scx = scz; scz = scz * 2.5
         Q_ = lambda y, z: (ox2 + (y - y_lo) * scx, oz2 - z * scz)
         d.rectangle([ox2 - 30, top + n * PH - 8, ox2 + 1580, top + n * PH + PH - 20], outline=(180, 180, 180))
         d.text((ox2 - 20, top + n * PH - 4), L(ja_t, en_t) + L('   + 1階 %s   (縦だけ2.5倍に拡大)' % kinds[n], '   + ground floor %s   (vertical x2.5)' % kinds[n]), fill=(20, 20, 20), font=f_m)
         d.line([Q_(y_lo, 0), Q_(y_hi, 0)], fill=(215, 215, 215), width=1)
         for (y0, z0, y1, z1, role) in seg:
             if role in FILL_ROLES and abs(y1 - y0) > 1e-4 and abs(z1 - z0) < 0.6 * abs(y1 - y0):
-                d.polygon([Q_(y0, z0), Q_(y1, z1), Q_(y1, -0.12), Q_(y0, -0.12)], fill=tuple(int(c * 0.55 + 255 * 0.45) for c in ROLE_COL.get(role, (150, 150, 150))))
+                d.polygon([Q_(y0, z0), Q_(y1, z1), Q_(y1, -0.05), Q_(y0, -0.05)], fill=tuple(int(c * 0.55 + 255 * 0.45) for c in ROLE_COL.get(role, (150, 150, 150))))
         fy0, fy1 = I['found_front'], I['wall_plane']
         if fd != 'flush':
             d.rectangle([Q_(fy0, I['found_top'])[0], Q_(fy0, I['found_top'])[1], Q_(fy1, I['gl'])[0], Q_(fy1, I['gl'])[1]], fill=ROLE_COL[I['found_role']])
