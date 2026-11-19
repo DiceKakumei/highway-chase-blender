@@ -899,7 +899,7 @@ def mat_wall(C, name, base, tile=False, streak=True, dirt_k=1.0, rough=0.88):
     b = principled(nt)
     u, v = nb.uv()
     far = C['detail'] == 'far'
-    dirt = nb.m('MULTIPLY', dirt_socket(nb, u, v, C, streak), dirt_k * (1.3 if tile else 1.4), clamp=True)       # タイルは汚れにくい★(塗装・吹付けは強く)
+    dirt = nb.m('MULTIPLY', dirt_socket(nb, u, v, C, streak), dirt_k * (0.8 if tile else 1.4), clamp=True)       # タイルは汚れにくい★(塗装・吹付けは強く)
     A = C['A']
     sd = C['seed'] * 1.713 + 0.37
     if tile and not far:
