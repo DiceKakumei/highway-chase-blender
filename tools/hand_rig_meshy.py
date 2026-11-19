@@ -181,7 +181,7 @@ def thumb_D(M, wps):
     return D
 
 
-def fit_thumb(bvh, M, target, rng):
+def fit_thumb(bvh, M, target, rng, mid=np.array([-0.02, -0.035, 0.012])):
     J = JOINTS['Thumb']; L = [np.linalg.norm(J[i + 1] - J[i]) for i in range(3)]
     cmc = (M @ np.r_[J[0], 1.0])[:3]; rest_d = [(M[:3, :3] @ (J[i + 1] - J[i])) / L[i] for i in range(3)]
 
@@ -200,7 +200,7 @@ def fit_thumb(bvh, M, target, rng):
             g = gap(bvh, s_) - THUMB_R
             if g < -0.0005:
                 sc += (-g - 0.0005) * 4000
-        sc += np.linalg.norm(P[3] - target) * 80
+        sc += np.linalg.norm(P[3] - target) * 250 + np.linalg.norm(P[2] - mid) * 60
         for i in range(2):
             ang = math.acos(max(-1, min(1, float(dirs[i] @ dirs[i + 1]))))
             sc += max(0.0, ang - 1.0) * 5
@@ -213,7 +213,7 @@ def fit_thumb(bvh, M, target, rng):
         v = base + rng.normal(0, spread, 3); return v / np.linalg.norm(v)
 
     best = None
-    for it in range(9000):
+    for it in range(16000):
         dirs = [rnd_dir(rest_d[i], 0.9) for i in range(3)]
         sc = score(dirs)
         if best is None or sc < best[0]:
@@ -295,7 +295,7 @@ def main():
     print('hand BEST pos', pos, 'yaw', yw, 'score %.2f' % scr, 'angles', ang)
     ao.matrix_world = Matrix(Mh)
     rng = np.random.default_rng(3)
-    wps, tscore = fit_thumb(bvh, Mh, np.array([-0.030, 0.012, 0.030]), rng)
+    wps, tscore = fit_thumb(bvh, Mh, np.array([-0.030, 0.025, 0.014]), rng)
     curl = {'Index': (8, 14, 8)}; curl.update(ang)
     D = flex_D(curl); D.update(thumb_D(Mh, wps))
     H.set_pose(ao, D)
