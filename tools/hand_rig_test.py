@@ -105,7 +105,7 @@ def finger_tube(pts, r0, r1, names, joints, bw, grp, ratio=0.92, tipr=True):
         rings.append([c, rings[-1][1], rings[-1][2], rt * ratio * k, rt * k, L + rt * math.sin(math.radians(a)) * 0.9])
     tip = samp[-1] + tg * rt * 0.9
     wf = lambda s, a: chain_w(s, joints, names, bw)
-    add_rings([tuple(r) for r in rings], wf, grp, cap_start=None, cap_end=(tip, L + rt))
+    add_rings([tuple(r) for r in rings], wf, grp, cap_start=(samp[0], s_arr[0]), cap_end=(tip, L + rt))
     return samp
 
 
@@ -280,6 +280,62 @@ def shoot(sc, cam, name, center, d, dist=0.42, up=(0, 0, 1)):
     sc.render.filepath = os.path.join(OUT, name + '.png'); bpy.ops.render.render(write_still=True)
 
 
+def fk_points(nm, ang, M):
+    """指 nm を、屈曲角 ang=(a1,a2,a3)度 で曲げたときの、中心線上のサンプル点(銃の座標)と半径 -> [(点, 半径, 区間番号)]"""
+    zf, r, ls = FING[nm]; p = np.array([KNUCKLE_X, KNUCKLE_Y, zf]); a = 0.0; out = []
+    for k in range(3):
+        a += math.radians(ang[k]); d = np.array([-math.sin(a), math.cos(a), 0.0])
+        for q in (0.25, 0.5, 0.75, 1.0):
+            pt = p + d * ls[k] * q
+            out.append(((M @ np.r_[pt, 1.0])[:3], r * (1.0 - 0.15 * (k + q) / 3), k))
+        p = p + d * ls[k]
+    return out
+
+
+def gap(bvh, pt):
+    loc, nrm, idx, dist = bvh.find_nearest(Vector(pt), 0.05)
+    if loc is None:
+        return 0.05
+    return dist if (Vector(pt) - loc).dot(nrm) >= 0 else -dist
+
+
+def fit_fingers(bvh, M, a0):
+    """中指・薬指・小指の曲げ角を探す(貫通しない範囲で、グリップに沿って巻く)。 -> (角度の辞書, 点数)"""
+    best = {}; total = 0.0
+    for nm in ('Middle', 'Ring', 'Pinky'):
+        bs = None
+        for a1 in range(10, 100, 10):
+            for a2 in range(20, 120, 10):
+                for a3 in range(0, 90, 10):
+                    pts = fk_points(nm, (a1, a2, a3), M)
+                    sc = 0.0; segmin = [0.05, 0.05, 0.05]
+                    for (pt, r, k) in pts:
+                        g = gap(bvh, pt) - r
+                        if g < -0.001:
+                            sc += 40 * (-g - 0.001) * 1000 / 10
+                        segmin[k] = min(segmin[k], max(g, 0))
+                    sc += sum(segmin) * 300
+                    tip = pts[-1][0]
+                    if tip[0] > -0.004:
+                        sc += 0.8 + (tip[0] + 0.004) * 20
+                    sc += 0.0006 * (abs(a1 - a0[nm][0]) + abs(a2 - a0[nm][1]) + abs(a3 - a0[nm][2]))
+                    if bs is None or sc < bs[0]:
+                        bs = (sc, (a1, a2, a3))
+        best[nm] = bs[1]; total += bs[0]
+    return best, total
+
+
+def palm_penalty(bvh, M):
+    pen = 0.0
+    for y in (0.0, 0.03, 0.06, 0.088):
+        for z in (-0.03, 0.0, 0.03):
+            for x in (-0.0165, -0.012):
+                g = gap(bvh, (M @ np.array([x, y, z, 1.0]))[:3])
+                if g < 0.0005:
+                    pen += (0.0005 - g) * 1000
+    return pen
+
+
 def pen_report(ob, gun, ao):
     dg = bpy.context.evaluated_depsgraph_get(); ev = ob.evaluated_get(dg); me = ev.to_mesh()
     M = ob.matrix_world
@@ -319,9 +375,25 @@ def main():
     # --- 2. 銃を握る
     gun = import_gun()
     P = dict(PRM)
-    pos = P.get('pos', (0.027, -0.054, -0.020)); yaw = P.get('yaw', 0.0); roll = P.get('roll', 0.0)
+    dg0 = bpy.context.evaluated_depsgraph_get(); bvh = BVHTree.FromObject(gun, dg0)
+    a0 = {'Middle': (60, 90, 50), 'Ring': (60, 90, 50), 'Pinky': (55, 85, 45)}
+    if 'pos' in P:
+        cand = [(tuple(P['pos']), P.get('yaw', 0.0))]
+    else:
+        cand = [((x, y, -0.020), yw) for yw in (0, 12, 24, 36) for x in (0.030, 0.034, 0.038) for y in (-0.070, -0.055, -0.040)]
+    bestc = None
+    for (pos, yw) in cand:
+        Mh = np.array(Matrix.Translation(pos) @ Matrix.Rotation(math.radians(yw), 4, 'Z'))
+        ang, sc = fit_fingers(bvh, Mh, a0)
+        sc += palm_penalty(bvh, Mh) * 3
+        if bestc is None or sc < bestc[0]:
+            bestc = (sc, pos, yw, ang)
+        print('cand pos %s yaw %d score %.2f' % (np.round(pos, 3), yw, sc))
+    sc, pos, yaw, ang = bestc; roll = P.get('roll', 0.0)
+    print('hand BEST pos', pos, 'yaw', yaw, 'score %.2f' % sc, 'angles', ang)
     ao.matrix_world = Matrix.Translation(pos) @ Matrix.Rotation(math.radians(yaw), 4, 'Z') @ Matrix.Rotation(math.radians(roll), 4, 'Y')
-    curl = P.get('curl', {'Index': (8, 14, 8), 'Middle': (85, 80, 55), 'Ring': (85, 80, 55), 'Pinky': (80, 80, 50)})
+    curl = {'Index': (8, 14, 8)}; curl.update(ang)
+    curl.update({k: tuple(v) for k, v in P.get('curl', {}).items()})
     thumb = P.get('thumb', {'Thumb1': (0, 0, 50), 'Thumb2': (0, 0, 30), 'Thumb3': (0, 0, 15)})
     Dg = curl_pose({k: tuple(v) for k, v in curl.items()}, {})
     wps = P.get('thumb_wp', [(-0.010, -0.054, 0.020), (-0.031, -0.022, 0.030), (-0.031, 0.004, 0.030)])
