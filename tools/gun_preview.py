@@ -106,7 +106,7 @@ def setup():
 
 def rig():
     global cam
-    for loc, e in (((-0.5, -0.9, 0.9), 55), ((0.9, -0.5, 0.7), 45), ((0.2, 0.9, 0.6), 25), ((0.0, 0.0, 1.2), 35)):
+    for loc, e in (((-0.5, -0.9, 0.9), 55), ((0.9, -0.5, 0.7), 45), ((0.2, 0.9, 0.6), 25), ((0.0, 0.0, 1.2), 14)):
         ld = bpy.data.lights.new('l', 'AREA'); ld.energy = e; ld.size = 0.9; lo = bpy.data.objects.new('l', ld); lo.location = loc; sc.collection.objects.link(lo)
         lo.rotation_euler = (Vector((0, 0.05, 0.03)) - Vector(loc)).to_track_quat('-Z', 'Y').to_euler()
     cam = bpy.data.objects.new('c', bpy.data.cameras.new('c')); sc.collection.objects.link(cam); sc.camera = cam; cam.data.type = 'ORTHO'
@@ -202,10 +202,10 @@ montage(fs, 2, '2_slide_lock')
 # ---- (3) 分解図(色分け)。 部品を離して置く
 for o in obs.values():
     o.hide_render = True
-OFF = {'frame': (0, 0, 0), 'slide': (0, 0.0, 0.075), 'barrel': (0, 0.0, 0.135), 'trigger': (0.0, 0.03, -0.045), 'slide_stop': (-0.05, 0, 0.02), 'magazine_base': (0, 0, -0.05)}
+OFF = {'frame': (0, 0, 0), 'slide': (0, 0.0, 0.07), 'barrel': (0, 0.0, 0.125), 'trigger': (0.0, 0.03, -0.045), 'slide_stop': (-0.05, 0, 0.02), 'magazine_base': (0, 0, -0.05)}
 xs = []
 for nm in GK.PART_NAMES:
-    o = GK.mesh_to_object(bpy, 'x_' + nm, parts[nm], tuple(np.array(GK.PIVOT[nm]) + np.array(OFF[nm])), GK.COLORS[nm]); xs.append(o)
+    o = GK.mesh_to_object(bpy, 'x_' + nm, parts[nm], GK.PIVOT[nm], GK.COLORS[nm]); o.location = tuple(np.array(GK.PIVOT[nm]) + np.array(OFF[nm])); xs.append(o)
 tilec = 0; fs = []
 T2 = (0.0, 0.07, 0.07)
 for loc, scl in ((dirloc(T2, (0.9, -0.5, 0.45)), 0.46), (dirloc(T2, (-0.9, -0.5, 0.45)), 0.46), (dirloc(T2, (1.0, -0.15, 0.1)), 0.46), (dirloc(T2, (0.2, -0.3, 1.0)), 0.46)):

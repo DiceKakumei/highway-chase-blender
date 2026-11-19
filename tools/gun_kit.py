@@ -519,14 +519,13 @@ def posed_parts(parts, pose):
 
 # ============================================================ (D) Blender(bpy が要る)
 MAT_SPEC = {0: ('gun_body', (0.04, 0.042, 0.048), 0.6, 0.42), 1: ('gun_inner', (0.022, 0.023, 0.026), 0.85, 0.5),
-            2: ('gun_steel', (0.20, 0.205, 0.215), 0.95, 0.28), 3: ('casing_brass', (0.80, 0.55, 0.18), 1.0, 0.28)}
+            2: ('gun_steel', (0.12, 0.125, 0.135), 0.85, 0.4), 3: ('casing_brass', (0.80, 0.55, 0.18), 1.0, 0.28)}
 
 
 def _material(bpy, mid, color=None):
     name, col, met, rough = MAT_SPEC[mid]
     if color is not None:
-        if mid in (1, 2):
-            color = tuple(c * 0.45 for c in color)       # 色分け表示では、切り口・内側を濃くする
+        color = tuple(c * (0.45 if mid in (1, 2) else 0.6) for c in color)       # 色分け表示。切り口・内側はさらに濃く
         met, rough = 0.0, 0.55
         name = '%s_c%02d%02d%02d' % (name, *[int(c * 99) for c in color]); col = color
     if name in bpy.data.materials:
