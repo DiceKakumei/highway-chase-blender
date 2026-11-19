@@ -26,7 +26,7 @@ K = {
     'knee_pole': (0.45, 0.9, 0.15),      # 膝の向き(前・外)
     'elbow_pole': (0.55, -0.35, -0.55),  # 肘の向き(外・後ろ・下)
     'chest_off': (0.10, 0.15, -0.14),    # 銃を抜くとき、右手が入る位置(胸の関節から。上着の内側。胴体に付いて動く)
-    'gun_grip_off': (0.0, 0.105, 0.012),  # 手首から銃のグリップ中心まで(前腕の向きに、上に)。小さすぎると銃が腕にめり込む
+    'gun_grip_off': (0.0, 0.075, -0.045), # 手首から銃のグリップ中心まで(前腕の向きに、上に)。銃口の線が前腕の少し上に来るよう、グリップは前腕より下
     'gun_scale': 1.0,
     'foot_down': (-0.46, 0.0),           # 横滑りのとき、左足を着く位置(バイクの左, 前)。ここは地面
 }
@@ -123,7 +123,8 @@ def build(R, root, proto, tag='BikeB'):
     # 銃
     gun = import_gun(R, d)
     flash = make_flash(R)
-    rd = {'ao': ao, 'body': body, 'M': M, 'Mi': Mi, 'rest_p': rest_p, 'rest_mat': rest_mat, 'bones': bones, 'gun': gun, 'flash': flash, 'root': root,
+    fist = make_fist(R)
+    rd = {'ao': ao, 'body': body, 'M': M, 'Mi': Mi, 'rest_p': rest_p, 'rest_mat': rest_mat, 'bones': bones, 'gun': gun, 'fist': fist, 'flash': flash, 'root': root,
           'cfg': proto['rig'], 'len': {}, 'parent': {n: (b.parent.name if b.parent else None) for n, b in bones.items()}}
     L = {}
     for s in 'LR':
@@ -161,6 +162,58 @@ def import_gun(R, d):
     R.smooth_mesh(me, 40.0, 2e-5)
     o.rotation_mode = 'QUATERNION'
     print('   gun: verts %d size %s' % (len(me.vertices), np.round(np.ptp(out, axis=0), 3)))
+    return o
+
+
+def _tube(p0, p1, r0, r1, n=10):
+    """p0 から p1 への円すい台(太さ r0 → r1、両端にふた)。 -> (頂点, 面)"""
+    p0 = np.array(p0, float); p1 = np.array(p1, float); ax = p1 - p0; ax /= np.linalg.norm(ax)
+    t = np.array([0, 0, 1.0]) if abs(ax[2]) < 0.9 else np.array([1.0, 0, 0])
+    u = np.cross(ax, t); u /= np.linalg.norm(u); v = np.cross(ax, u)
+    V = []; F = []
+    for q, r in ((p0, r0), (p1, r1)):
+        for i in range(n):
+            a = 2 * math.pi * i / n
+            V.append(tuple(q + r * (math.cos(a) * u + math.sin(a) * v)))
+    for i in range(n):
+        j = (i + 1) % n
+        F.append((i, j, n + j, n + i))
+    c0 = len(V); V.append(tuple(p0)); c1 = len(V); V.append(tuple(p1))
+    for i in range(n):
+        j = (i + 1) % n
+        F.append((c0, j, i)); F.append((c1, n + i, n + j))
+    return V, F
+
+
+def _ellipsoid(c, r, nu=14, nv=9):
+    V = []; F = []
+    for iv in range(nv + 1):
+        th = math.pi * iv / nv
+        for iu in range(nu):
+            ph = 2 * math.pi * iu / nu
+            V.append((c[0] + r[0] * math.sin(th) * math.cos(ph), c[1] + r[1] * math.sin(th) * math.sin(ph), c[2] + r[2] * math.cos(th)))
+    for iv in range(nv):
+        for iu in range(nu):
+            a = iv * nu + iu; b = iv * nu + (iu + 1) % nu
+            F.append((a, b, b + nu, a + nu))
+    return V, F
+
+
+def make_fist(R):
+    """銃を握った手(グローブ)。Meshyの手は指のボーンが無く、開いた平らな手なので、銃を貫通する。
+    銃を持つあいだは、Meshyの右手を畳み(スケール≒0)、代わりにこの拳を銃と一緒に動かす。銃のローカル座標: x=右, y=銃口, z=上、原点=グリップの中心。"""
+    V = []; F = []
+    def add(vf):
+        n = len(V); V.extend(vf[0]); F.extend([tuple(i + n for i in f) for f in vf[1]])
+    add(_ellipsoid((0.0, -0.014, -0.008), (0.037, 0.047, 0.036)))                        # 手のひら・手の甲
+    for z in (-0.034, -0.016, 0.002):                                                    # 中指・薬指・小指: グリップの前側を巻く
+        add(_tube((-0.024, 0.041, z), (0.040, 0.041, z), 0.0098, 0.0098))
+    add(_tube((0.024, 0.018, 0.030), (0.024, 0.088, 0.030), 0.0088, 0.0078))              # 人さし指: フレームに沿ってまっすぐ(引き金の外)
+    add(_tube((-0.028, -0.012, 0.010), (-0.028, 0.062, 0.016), 0.0098, 0.0085))           # 親指: 銃の左側に沿う
+    add(_tube((0.0, -0.040, -0.002), (0.0, -0.078, 0.046), 0.031, 0.028))                # 手首へつなぐ
+    mat = R.simple_material('FistGlove', (0.05, 0.10, 0.34), rough=0.5)
+    o = R.mesh_object('fist', V, F, mats=[mat], smooth=True)
+    o.rotation_mode = 'QUATERNION'
     return o
 
 
@@ -333,6 +386,11 @@ def key(rd, j, pz, root_M, A_world, tau):
     g.location = mm.to_translation(); g.rotation_quaternion = _cont(rd, 'gun', j, mm.to_quaternion())
     g.keyframe_insert('location', frame=j); g.keyframe_insert('rotation_quaternion', frame=j)
     g.hide_render = vis < 0.5; g.keyframe_insert('hide_render', frame=j)
+    fi = rd['fist']; fi.location = mm.to_translation(); fi.rotation_quaternion = _cont(rd, 'fist', j, mm.to_quaternion())
+    fi.keyframe_insert('location', frame=j); fi.keyframe_insert('rotation_quaternion', frame=j)
+    fi.hide_render = vis < 0.5; fi.keyframe_insert('hide_render', frame=j)
+    hb = rd['ao'].pose.bones['RightHand']; hs = 0.001 if vis >= 0.5 else 1.0         # 銃を持つあいだは、Meshyの開いた手を消す(拳に置き換える)
+    hb.scale = (hs, hs, hs); hb.keyframe_insert('scale', frame=j)
     fl = rd['flash']['obj']; mw = Matrix(root_M @ muz)
     fl.location = mw.to_translation(); fl.rotation_quaternion = _cont(rd, 'flash', j, mw.to_quaternion())
     fl.keyframe_insert('location', frame=j); fl.keyframe_insert('rotation_quaternion', frame=j)
