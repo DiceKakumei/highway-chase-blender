@@ -1,0 +1,110 @@
+name: assemble
+# 合体専用(Blenderを使わない)。Releaseに残っているEXRを、必要なコマだけ集めて、仕上げ(post.py)→mp4にする。描き直さない。
+#   gh workflow run assemble.yml -R DiceKakumei/highway-chase-blender -f res=960x540 -f segments='[{"tag":"r31","src":"0-719","dst":0},{"tag":"r47","src":"106-143","dst":106},{"tag":"r44","src":"0-359","dst":720},{"tag":"r46","src":"125-250","dst":845}]'
+# segments: 重ねる順に並べた配列。後ろが前を上書き。src=そのタグのコマ番号(例 "0-719" / "125,151,228-247")、dst=srcの最初のコマの出力番号。
+#   tarに無いコマは飛ばす(上書きしない)。出力コマに抜けがあればエラー。
+# res: 出力の解像度。大きいコマは縮小(INTER_AREA)、小さいコマがあればエラー(拡大しない)。
+# store=1: 合体した全コマのEXRを新しいRelease(a<番号>)に exr-NNN.tar で保存。以後は segments の1行で使える。
+on:
+  workflow_dispatch:
+    inputs:
+      segments:
+        description: '[{"tag":"r31","src":"0-719","dst":0}, ...] 重ねる順(後ろが勝つ)'
+        required: true
+      res:
+        description: "出力の解像度(縮小のみ)"
+        default: "960x540"
+      grade:
+        description: "post.py の G の上書き(JSON)。続編側は seq キーで上書き"
+        default: "{}"
+      both:
+        description: "1 = コマ720以降を続編の仕上げにする(post.py --both)"
+        default: "1"
+      audio:
+        description: "音声(リポジトリ内のパス)"
+        default: "assets/audio_acid_v5.wav"
+      audio2:
+        description: "audio の後ろにつなぐ音声(続編 assets/audio_sequel.wav)。空ならつながない"
+        default: "assets/audio_sequel.wav"
+      store:
+        description: "1 = 合体した全コマのEXRを新しいReleaseに保存し直す"
+        default: "0"
+permissions:
+  contents: write
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk ffmpeg
+      - run: pip install -q numpy opencv-python-headless pillow OpenEXR
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEGMENTS: ${{ inputs.segments }}
+        run: |
+          gh release create "a${{ github.run_number }}" --title "assemble ${{ github.run_number }}" --notes "res=${{ inputs.res }} store=${{ inputs.store }} segments=$SEGMENTS" --repo "${{ github.repository }}"
+      - name: Collect EXR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEGMENTS: ${{ inputs.segments }}
+        run: |
+          python3 tools/assemble.py "$SEGMENTS" exr manifest.json "${{ github.repository }}"
+          du -sh exr
+          df -h . | tail -1
+      - name: Store EXR (new release)
+        if: ${{ inputs.store == '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 1つ2GB未満(約1.2GBずつ)に分けて、exr-NNN.tar で保存する
+          python3 - <<'PY'
+          import glob, os, tarfile
+          fs = sorted(glob.glob('exr/[0-9][0-9][0-9][0-9].exr'))
+          groups, cur, sz = [], [], 0
+          for p in fs:
+              s = os.path.getsize(p)
+              if cur and sz + s > 1_200_000_000:
+                  groups.append(cur); cur, sz = [], 0
+              cur.append(p); sz += s
+          if cur:
+              groups.append(cur)
+          for i, g in enumerate(groups):
+              with tarfile.open('exr-%03d.tar' % i, 'w') as tf:
+                  for p in g:
+                      tf.add(p, arcname=os.path.basename(p))
+              print('exr-%03d.tar' % i, os.path.basename(g[0]), os.path.basename(g[-1]), os.path.getsize('exr-%03d.tar' % i))
+          PY
+          cp manifest.json manifest_store.json
+          gh release upload "a${{ github.run_number }}" exr-*.tar manifest_store.json --clobber --repo "${{ github.repository }}"
+          rm -f exr-*.tar
+      - name: Grade
+        env:
+          GRADE: ${{ inputs.grade }}
+        run: |
+          BOTH=""
+          if [ "${{ inputs.both }}" = "1" ]; then BOTH="--both"; fi
+          mkdir -p png
+          python3 tools/post.py exr png --params "$GRADE" $BOTH --res "${{ inputs.res }}" --sheet sheet.jpg
+          ls png/*.png | wc -l
+      - name: Video
+        run: |
+          AUDIO="${{ inputs.audio }}"
+          if [ -n "${{ inputs.audio2 }}" ]; then
+            ffmpeg -loglevel error -y -i "$AUDIO" -i "${{ inputs.audio2 }}" -filter_complex "[0:a]aresample=48000,aformat=channel_layouts=stereo[a0];[1:a]aresample=48000,aformat=channel_layouts=stereo[a1];[a0][a1]concat=n=2:v=0:a=1[a]" -map "[a]" -c:a pcm_s24le audio_all.wav
+            AUDIO=audio_all.wav
+          fi
+          ffprobe -v error -show_entries format=duration -of default=nw=1 "$AUDIO"
+          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i $AUDIO -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -shortest -movflags +faststart chase_hq.mp4
+          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i $AUDIO -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 20 -maxrate 6M -bufsize 12M -pix_fmt yuv420p -c:a aac -b:a 192k -ar 48000 -shortest -movflags +faststart chase_phone.mp4
+          for f in chase_hq.mp4 chase_phone.mp4; do
+            ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames,width,height,duration -of default=nw=1 $f
+            ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=nw=1 $f
+            ffprobe -v error -show_entries format=duration,size -of default=nw=1 $f
+          done
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "a${{ github.run_number }}" chase_hq.mp4 chase_phone.mp4 sheet.jpg manifest.json --clobber --repo "${{ github.repository }}"

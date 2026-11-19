@@ -1,5 +1,6 @@
 """EXR(リニア) -> 仕上げ(にじみ・トーンマップ・周辺減光・粒子・タイトル・暗転) -> PNG。
-usage: python tools/post.py <exr_dir> <png_dir> [--params JSON] [--sheet sheet.jpg] [--notitle] [--both]
+usage: python tools/post.py <exr_dir> <png_dir> [--params JSON] [--sheet sheet.jpg] [--notitle] [--both] [--res WxH]
+(--res: 出力の解像度。コマがそれより大きければ縮小(INTER_AREA)、小さければエラー[拡大しない])
 (--both: コマ720以降は続編用の仕上げ[題字なし・0.8秒で明ける・終わりの暗転なし]、tは f-720)
 コマ番号 f はファイル名(0024.exr)から取り、t = f / 24。"""
 import os, sys, json, glob
@@ -125,7 +126,7 @@ def finish(out, f, notitle=False, both=False):
 def main():
     args = sys.argv[1:]
     src, dst = args[0], args[1]
-    sheet = None; notitle = False; both = False
+    sheet = None; notitle = False; both = False; res = None
     i = 2
     while i < len(args):
         if args[i] == '--params':
@@ -134,6 +135,8 @@ def main():
             sheet = args[i + 1]; i += 2
         elif args[i] == '--both':
             both = True; i += 1
+        elif args[i] == '--res':
+            res = tuple(int(v) for v in args[i + 1].lower().split('x')); i += 2
         elif args[i] == '--notitle':
             notitle = True; i += 1
         else:
@@ -146,6 +149,10 @@ def main():
         lin = read_exr(p)
         out = finish(grade(lin, f), f, notitle, both)
         bgr = (np.clip(out[..., ::-1], 0, 1) * 255 + 0.5).astype(np.uint8)
+        if res and (bgr.shape[1], bgr.shape[0]) != res:
+            if bgr.shape[1] < res[0] or bgr.shape[0] < res[1]:
+                sys.exit('frame %d is %dx%d, smaller than --res %dx%d (no upscaling)' % (f, bgr.shape[1], bgr.shape[0], res[0], res[1]))
+            bgr = cv2.resize(bgr, res, interpolation=cv2.INTER_AREA)
         cv2.imwrite(os.path.join(dst, '%04d.png' % f), bgr)
         if sheet and (len(files) <= 60 or files.index(p) % max(1, len(files) // 60) == 0):
             th = cv2.resize(bgr, (640, 360), interpolation=cv2.INTER_AREA)
