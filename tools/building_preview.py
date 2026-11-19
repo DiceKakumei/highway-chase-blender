@@ -13,7 +13,7 @@ import building_kit as bk
 ARGV = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else ['out']
 OUT = ARGV[0]; os.makedirs(OUT, exist_ok=True)
 PRM = json.load(open(ARGV[1])) if len(ARGV) > 1 else {}
-PART = PRM.get('part', 'all'); SAMPLES = int(PRM.get('samples', 32)); RES = PRM.get('res', [960, 640]); EMIT = float(PRM.get('emit', 1.5))
+PART = PRM.get('part', 'all'); SAMPLES = int(PRM.get('samples', 32)); RES = PRM.get('res', [960, 640]); EMIT = float(PRM.get('emit', 1.3))
 ONLY = PRM.get('shots')
 
 
@@ -132,19 +132,19 @@ def scene_basic(mode):
 
 def shot_single(name, mode, spec, cam, extra_lights=None):
     sc = scene_basic(mode)
-    kind, w, d, fl, seed = spec
+    kind, w, d, fl, seed, age = spec
     night = mode == 'night'
-    build(kind, w, d, fl, seed, 'near', night)
+    build(kind, w, d, fl, seed, 'near', night, age=age)
     if mode == 'night':
         add_street_lights(sc, extra_lights or [(-7, -(d / 2) - 9, 6.0), (9, -(d / 2) - 10, 6.0)])
     set_cam(sc, *cam)
     render(sc, name)
 
 
-def shot_lod(name, detail, cam, spec=('zakkyo', 11.7, 15.6, 8, 5)):
+def shot_lod(name, detail, cam, spec=('zakkyo', 11.7, 15.6, 8, 5, 0.75)):
     sc = scene_basic('day')
-    kind, w, d, fl, seed = spec
-    build(kind, w, d, fl, seed, detail, False)
+    kind, w, d, fl, seed, age = spec
+    build(kind, w, d, fl, seed, detail, False, age=age)
     set_cam(sc, *cam)
     render(sc, name)
 
@@ -191,7 +191,7 @@ def shot_street(name, mode):
 def shot_roof(name, mode):
     sc = scene_basic(mode)
     night = mode == 'night'
-    build('office', 33, 26.4, 16, 3, 'near', night)
+    build('office', 33, 26.4, 16, 3, 'near', night, age=0.35)
     if mode == 'day':
         set_cam(sc, (15.0, -14.0, 73.0), (-1.0, 0.0, 66.5), 35)
     else:
@@ -200,12 +200,12 @@ def shot_roof(name, mode):
 
 
 SHOTS = [
-    ('01_day_office_near', lambda n: shot_single(n, 'day', ('office', 33, 26.4, 16, 3), ((13.0, -13.2 - 14.0, 9.0), (14.0, -13.2, 20.0), 30))),
-    ('02_day_zakkyo_near', lambda n: shot_single(n, 'day', ('zakkyo', 11.7, 15.6, 8, 5), ((5.5, -7.8 - 9.0, 9.5), (1.5, -7.8, 11.5), 35))),
-    ('03_day_mansion_near', lambda n: shot_single(n, 'day', ('mansion', 26.4, 13.2, 10, 7), ((9.0, -8.0 - 8.0, 12.0), (7.0, -8.0, 12.5), 35))),
-    ('04_night_office_near', lambda n: shot_single(n, 'night', ('office', 33, 26.4, 16, 3), ((13.0, -13.2 - 14.0, 9.0), (14.0, -13.2, 20.0), 30))),
-    ('05_night_zakkyo_near', lambda n: shot_single(n, 'night', ('zakkyo', 11.7, 15.6, 8, 5), ((5.5, -7.8 - 9.0, 9.5), (1.5, -7.8, 11.5), 35))),
-    ('06_night_mansion_near', lambda n: shot_single(n, 'night', ('mansion', 26.4, 13.2, 10, 7), ((9.0, -8.0 - 8.0, 12.0), (7.0, -8.0, 12.5), 35))),
+    ('01_day_office_near', lambda n: shot_single(n, 'day', ('office', 33, 26.4, 16, 3, 0.35), ((13.0, -13.2 - 14.0, 9.0), (14.0, -13.2, 20.0), 30))),
+    ('02_day_zakkyo_near', lambda n: shot_single(n, 'day', ('zakkyo', 11.7, 15.6, 8, 5, 0.75), ((5.5, -7.8 - 9.0, 9.5), (1.5, -7.8, 11.5), 35))),
+    ('03_day_mansion_near', lambda n: shot_single(n, 'day', ('mansion', 26.4, 13.2, 10, 7, 0.6), ((9.0, -8.0 - 8.0, 12.0), (7.0, -8.0, 12.5), 35))),
+    ('04_night_office_near', lambda n: shot_single(n, 'night', ('office', 33, 26.4, 16, 3, 0.35), ((13.0, -13.2 - 14.0, 9.0), (14.0, -13.2, 20.0), 30))),
+    ('05_night_zakkyo_near', lambda n: shot_single(n, 'night', ('zakkyo', 11.7, 15.6, 8, 5, 0.75), ((5.5, -7.8 - 9.0, 9.5), (1.5, -7.8, 11.5), 35))),
+    ('06_night_mansion_near', lambda n: shot_single(n, 'night', ('mansion', 26.4, 13.2, 10, 7, 0.6), ((9.0, -8.0 - 8.0, 12.0), (7.0, -8.0, 12.5), 35))),
     ('07_day_street', lambda n: shot_street(n, 'day')),
     ('08_night_street', lambda n: shot_street(n, 'night')),
     ('09_lod_near', lambda n: shot_lod(n, 'near', ((4.0, -7.8 - 14.0, 10.0), (0.0, -7.8, 11.5), 35))),
@@ -213,29 +213,29 @@ SHOTS = [
     ('11_lod_far', lambda n: shot_lod(n, 'far', ((4.0, -7.8 - 14.0, 10.0), (0.0, -7.8, 11.5), 35))),
     ('12_day_roof_office', lambda n: shot_roof(n, 'day')),
     ('13_night_tower_top', lambda n: shot_roof(n, 'night')),
-    ('14_day_zakkyo_side_stair', lambda n: shot_single(n, 'day', ('zakkyo', 11.7, 15.6, 8, 5), ((5.85 + 13.0, -3.0, 12.0), (5.85, 0.0, 12.0), 28))),
-    ('15_night_mansion_corridor', lambda n: shot_single(n, 'night', ('mansion', 26.4, 13.2, 10, 7), ((-6.0, 6.6 + 1.5 + 9.0, 12.0), (-4.0, 6.6 + 1.5, 12.0), 35),
+    ('14_day_zakkyo_side_stair', lambda n: shot_single(n, 'day', ('zakkyo', 11.7, 15.6, 8, 5, 0.75), ((5.85 + 13.0, -3.0, 12.0), (5.85, 0.0, 12.0), 28))),
+    ('15_night_mansion_corridor', lambda n: shot_single(n, 'night', ('mansion', 26.4, 13.2, 10, 7, 0.6), ((-6.0, 6.6 + 1.5 + 9.0, 12.0), (-4.0, 6.6 + 1.5, 12.0), 35),
                                                          extra_lights=[(-8, 18, 6), (6, 18, 6)])),
 ]
 
 
 # ------------------------------------------------------------------ カタログ(.blend / .glb)
-CATALOG = [   # 名前, kind, 幅, 奥行き, 階数, seed
-    ('office_A', 'office', 33.0, 26.4, 16, 3), ('office_B', 'office', 19.8, 16.5, 10, 11),
-    ('zakkyo_A', 'zakkyo', 11.7, 15.6, 8, 5), ('zakkyo_B', 'zakkyo', 15.6, 11.7, 6, 21),
-    ('mansion_A', 'mansion', 26.4, 13.2, 10, 7), ('mansion_B', 'mansion', 19.8, 13.2, 14, 12),
+CATALOG = [   # 名前, kind, 幅, 奥行き, 階数, seed, 築年数の指標(0=新築 … 1=築40年超)
+    ('office_A', 'office', 33.0, 26.4, 16, 3, 0.35), ('office_B', 'office', 19.8, 16.5, 10, 11, 0.70),
+    ('zakkyo_A', 'zakkyo', 11.7, 15.6, 8, 5, 0.75), ('zakkyo_B', 'zakkyo', 15.6, 11.7, 6, 21, 0.40),
+    ('mansion_A', 'mansion', 26.4, 13.2, 10, 7, 0.60), ('mansion_B', 'mansion', 19.8, 13.2, 14, 12, 0.30),
 ]
 
 
 def do_catalog():
     cdir = OUT                                           # hand_view.yml は out/*.blend out/*.glb を Release に上げる
     infos = {}
-    for (nm, kind, w, d, fl, seed) in CATALOG:
+    for (nm, kind, w, d, fl, seed, age) in CATALOG:
         sc = fresh()
         roots = {}
         x = 0.0
         for det in ('near', 'mid', 'far'):
-            r = build(kind, w, d, fl, seed, det, True, 20.0, loc=(x, 0, 0), name='%s_%s' % (nm, det))
+            r = build(kind, w, d, fl, seed, det, True, 20.0, loc=(x, 0, 0), name='%s_%s' % (nm, det), age=age)
             roots[det] = r; infos['%s_%s' % (nm, det)] = bk.building_info(r)
             x += bk.building_info(r)['width_m'] + 14.0
         bpy.ops.wm.save_as_mainfile(filepath=os.path.join(cdir, 'bld_' + nm + '.blend'), compress=True)

@@ -311,7 +311,7 @@ def roof_items(ctx):
     for i, fr in enumerate(ctx.frames):
         a0, a1 = (0.0, fr.L) if i in (0, 2) else (t, fr.L - t)
         fbox(md, fr, a0, a1, H, H + hp, -t, 0.0, prole, skip=('a-', 'a+', 'z-'))
-    top = H + hp
+    top = H                      # 設備は屋上面(H)に置く。パラペットの天端は H+hp
     rects = []
 
     def place(w, d, margin=1.3):
@@ -405,7 +405,7 @@ def roof_items(ctx):
         ls = 0.45
         zl = (pent_top[2] + 0.0) if pent_top else top
         for (cx, cy) in [(-W / 2 + 0.6, -D / 2 + 0.6), (W / 2 - 0.6, -D / 2 + 0.6), (W / 2 - 0.6, D / 2 - 0.6), (-W / 2 + 0.6, D / 2 - 0.6)]:
-            wbox(md, cx - ls / 2, cx + ls / 2, cy - ls / 2, cy + ls / 2, top, top + ls, 'lamp_red', skip=('z-',))
+            wbox(md, cx - ls / 2, cx + ls / 2, cy - ls / 2, cy + ls / 2, H + hp, H + hp + ls, 'lamp_red', skip=('z-',))
             info['red_lights'] += 1
         if pent_top:
             wbox(md, pent_top[0] - ls / 2, pent_top[0] + ls / 2, pent_top[1] - ls / 2, pent_top[1] + ls / 2, pent_top[2], pent_top[2] + ls, 'lamp_red', skip=('z-',))
@@ -872,8 +872,10 @@ def dirt_socket(nb, u, v, C, streak=True):
         ls = nb.m('ADD', 1.4, nb.m('MULTIPLY', hv2, 1.8))                         # 筋の長さ 1.4〜3.2m(推1〜3m)
         decay = nb.sstep(dsill, ls, 0.0)
         tex = nb.m('ADD', 0.35, nb.m('MULTIPLY', nz(6.0, 0.22, 4.0), 1.1), clamp=True)
-        terms.append(nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', line, decay), on), tex), 1.8))
-    broad = nb.m('MULTIPLY', nb.sstep(nz(1.3, 0.10, 3.0), 0.45, 0.80), 0.35)         # 大きな縦のムラ
+        terms.append(nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', line, decay), on), tex), 2.6))
+        gen = nb.m('MULTIPLY', nb.m('MULTIPLY', nb.sstep(nz(9.0, 0.12, 4.0), 0.52, 0.80), decay), 0.9)      # 窓台の幅いっぱいに流れる細い筋
+        terms.append(nb.m('MULTIPLY', gen, nb.m('MULTIPLY', nb.m('GREATER_THAN', hv2, 0.25), 1.0)))
+    broad = nb.m('MULTIPLY', nb.sstep(nz(0.55, 0.12, 3.0), 0.45, 0.80), 0.30)        # 大きな縦のムラ
     terms.append(broad)
     top = nb.m('MULTIPLY', nb.sstep(nb.m('SUBTRACT', C['H'], v), 2.4, 0.0), nb.m('ADD', 0.45, nb.m('MULTIPLY', nz(2.0, 0.6), 0.9)))
     terms.append(nb.m('MULTIPLY', top, 0.85))                                       # 上端
@@ -897,7 +899,7 @@ def mat_wall(C, name, base, tile=False, streak=True, dirt_k=1.0, rough=0.88):
     b = principled(nt)
     u, v = nb.uv()
     far = C['detail'] == 'far'
-    dirt = nb.m('MULTIPLY', dirt_socket(nb, u, v, C, streak), dirt_k * (0.6 if tile else 1.0))       # タイルは汚れにくい★
+    dirt = nb.m('MULTIPLY', dirt_socket(nb, u, v, C, streak), dirt_k * (1.0 if tile else 1.4), clamp=True)       # タイルは汚れにくい★(塗装・吹付けは強く)
     A = C['A']
     sd = C['seed'] * 1.713 + 0.37
     if tile and not far:
@@ -999,7 +1001,7 @@ def mat_room(C, name, part, rkind):
     E = C['E']
     u, v = nb.uv()
     if part == 'wall':
-        k = nb.m('MULTIPLY', nb.m('MULTIPLY', I, E), nb.m('ADD', 0.45, nb.m('MULTIPLY', nb.sstep(v, 0.0, 2.6), 0.4)))
+        k = nb.m('MULTIPLY', nb.m('MULTIPLY', I, E), nb.m('ADD', 0.22, nb.m('MULTIPLY', nb.sstep(v, 0.6, 1.5), 0.55)))        # 下は机・棚で暗く、上は天井の照明で明るい
         sh = emit_shader(nb, T, I, k)
     elif part == 'floor':
         sh = emit_shader(nb, T, I, nb.m('MULTIPLY', nb.m('MULTIPLY', I, E), 0.22))
