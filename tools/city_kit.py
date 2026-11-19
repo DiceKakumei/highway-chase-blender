@@ -59,7 +59,7 @@ DEFAULT_POLICY = dict(
     split=True,
     piece_steps=6,                   # 道路を切る区間の長さ(4m x 6 = 24m)。 区間ごとに、壁までの最小の距離から断面を決める
     ultra_stride=4,                  # 150mより遠い道路の帯は、4mの点を 4つおき(16m)に
-    apron=True, legacy=False,        # legacy=True は修正前の方式(比較用)
+    apron=True, trim_junctions=True, legacy=False,        # legacy=True は修正前の方式(比較用)
 )
 KIND_JP = {'office': 'ガラスのオフィス', 'zakkyo': '雑居(タイル)', 'mansion': 'マンション', 'low': '低層(小さい)', 'house': '低層(住宅)'}
 NO_STREET = ('rail', 'pedestrian', 'service')
@@ -424,9 +424,75 @@ def wall_min_for(cls, w):
     return wr_min_for(w) + MIN_G + CW + MIN_SW + BW + MIN_INU + 0.03 + 0.01
 
 
+def main_half(w):
+    """道路の片側の、縁石の外側までの幅の見積り(車道 + 路肩 + 縁石)。 横から来る道路の断面を、ここで止める"""
+    lanes = int(min(3, max(1, round((w / 2.0 - 0.30) / 3.25))))
+    return lanes * 3.25 + 0.30 + 0.18
+
+
+class JunctionTrim:
+    """T字路で、横から来る道路の端を、突き当たる道路の車道(縁石の外側)の手前で止める。 止めないと、横の道路の縁石・歩道・基礎が、突き当たる道路の車道の上に出る"""
+    def __init__(self, city, cell=40.0):
+        self.cell = cell; pts = []; meta = []
+        for ri, r in enumerate(city['roads']):
+            if r['c'] in ('rail', 'service', 'pedestrian') or r['w'] < 4.5:
+                continue
+            S = resample(np.asarray(r['p'], float), 4.0)
+            if len(S) < 2:
+                continue
+            t = np.gradient(S, axis=0); t /= (np.hypot(t[:, 0], t[:, 1])[:, None] + 1e-9)
+            h = main_half(r['w'])
+            for k in range(len(S)):
+                pts.append(S[k]); meta.append((ri, t[k, 0], t[k, 1], h))
+        self.pts = np.asarray(pts, float).reshape(-1, 2); self.meta = np.asarray(meta, float).reshape(-1, 4); self.grid = {}
+        for i, (x, y) in enumerate(self.pts):
+            self.grid.setdefault((int(x // cell), int(y // cell)), []).append(i)
+
+    def other(self, ri, x, y, r=2.5):
+        idx = []
+        gx, gy = int(x // self.cell), int(y // self.cell)
+        for ix in range(gx - 1, gx + 2):
+            for iy in range(gy - 1, gy + 2):
+                idx += self.grid.get((ix, iy), [])
+        best = None
+        for i in idx:
+            if int(self.meta[i, 0]) == ri:
+                continue
+            d = float(np.hypot(self.pts[i, 0] - x, self.pts[i, 1] - y))
+            if d < r and (best is None or d < best[0]):
+                best = (d, i)
+        return None if best is None else (self.pts[best[1]], self.meta[best[1]])
+
+    def trim(self, ri, S):
+        """S(n,2) の両端を、T字路なら突き当たる道路の縁石の外側まで縮める。 -> S'(n',2)"""
+        S = np.asarray(S, float)
+        for end in (0, -1):
+            if len(S) < 3:
+                break
+            Sx = S if end == 0 else S[::-1]
+            o = self.other(ri, Sx[0, 0], Sx[0, 1])
+            if o is None:
+                continue
+            q, m = o
+            t = Sx[1] - Sx[0]; t = t / (np.hypot(*t) + 1e-9)
+            if abs(t[0] * m[1] + t[1] * m[2]) > 0.6:          # ほぼ同じ向き = 道路の続き。 止めない
+                continue
+            H = m[3]
+            # q(突き当たる道路の中心線の点)からの距離が H になる所まで、端から進める
+            d = np.hypot(Sx[:, 0] - q[0], Sx[:, 1] - q[1])
+            k = int(np.argmax(d >= H)) if (d >= H).any() else None
+            if k is None or k == 0:
+                continue
+            a, b = Sx[k - 1], Sx[k]; f = (H - d[k - 1]) / max(d[k] - d[k - 1], 1e-6)
+            Sx = np.vstack([a + (b - a) * min(max(f, 0.0), 1.0), Sx[k:]])
+            S = Sx if end == 0 else Sx[::-1]
+        return S
+
+
 def road_pieces(city, center, radius, cam, pol):
-    """道路を区間(既定 24m)に切る。 -> [dict(ri, cls, w, S(n,2), band, dc)]。 rail は除く。 bpy 不要"""
+    """道路を区間(既定 24m)に切る。 -> [dict(ri, cls, w, S(n,2), band, dc)]。 rail は除く。 T字路で突き当たる側の端は、相手の車道の手前で止める。 bpy 不要"""
     cx, cy = center; steps = int(pol['piece_steps']); out = []
+    jt = JunctionTrim(city) if pol.get('trim_junctions', True) else None
     for ri, r in enumerate(city['roads']):
         cls = r['c']
         if cls == 'rail':
@@ -440,6 +506,10 @@ def road_pieces(city, center, radius, cam, pol):
         S = resample(P, 4.0)
         if len(S) < 2:
             continue
+        if jt is not None and not band:
+            S = jt.trim(ri, S)
+            if len(S) < 2:
+                continue
         n = len(S); i = 0
         while i < n - 1:
             j = min(n - 1, i + steps)
