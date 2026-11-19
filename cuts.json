@@ -1,0 +1,756 @@
+{
+ "_readme": [
+  "カット台帳。「出力コマ範囲 → 元のタグ・元のコマ・解像度・サンプル・カット名」。",
+  "運用: カットを描き直したら(1)builds に新しい合体(segments)を足す (2)該当カットの source を新タグ・新コマに書き換える (3)store=1 で全コマをそろえたら tag を1つにまとめ、stored_tag に書く。",
+  "出力コマ番号: 0〜719=追跡(30秒)、720〜1079=続編(15秒、続編側コマ番号+720)。24fps。",
+  "source の src_frames は、そのタグ(Release)の中のコマ番号。続編のタグ(r44/r46)は続編側の番号(0〜359)のまま。出力コマ = 720 + src。",
+  "合体は .github/workflows/assemble.yml(segments)。Releaseのタグ・ファイルは消さない。"
+ ],
+ "builds": [
+  {
+   "name": "v6追跡+続編(r46反映) 45秒",
+   "date": "2026-11-19",
+   "segments": [
+    {
+     "tag": "r31",
+     "src": "0-719",
+     "dst": 0
+    },
+    {
+     "tag": "r47",
+     "src": "106-143",
+     "dst": 106
+    },
+    {
+     "tag": "r44",
+     "src": "0-359",
+     "dst": 720
+    },
+    {
+     "tag": "r46",
+     "src": "125-250",
+     "dst": 845
+    }
+   ],
+   "res": "960x540",
+   "stored_tag": "a1",
+   "note": "store=1で全1080コマ(出力コマ0〜1079、追跡1280x720・続編960x540)を a1 に保存。以後は segments を {\"tag\":\"a1\",\"src\":\"0-1079\",\"dst\":0} の1行で使える"
+  }
+ ],
+ "tags": {
+  "r31": "追跡v5 全720コマ 1280x720 40spp",
+  "r47": "追跡 106-143 描き直し(4.4〜6.0秒前輪アップ削除の穴埋め) 1280x720 40spp",
+  "r44": "続編 全360コマ 960x540 24spp",
+  "r46": "続編 描き直し125,151,178,204,228-247,250 (base=r44) 960x540 24spp",
+  "a1": "v6追跡+続編(r46反映)の合体。全1080コマ。exr-000(0-428)/001(429-988)/002(989-1079)。manifest.json付き"
+ },
+ "cuts": [
+  {
+   "id": "chase-01",
+   "scene": "追跡",
+   "name": "すれ違い(Aが通過してBへウィップパン)",
+   "out_frames": [
+    0,
+    62
+   ],
+   "out_sec": [
+    0.0,
+    2.625
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      0,
+      62
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-02",
+   "scene": "追跡",
+   "name": "Aの背後を低く(傾き)。v6では4.4〜6.0秒まで延長",
+   "out_frames": [
+    63,
+    143
+   ],
+   "out_sec": [
+    2.625,
+    6.0
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      63,
+      105
+     ],
+     "res": "1280x720",
+     "samples": 40
+    },
+    {
+     "tag": "r47",
+     "src_frames": [
+      106,
+      143
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-03",
+   "scene": "追跡",
+   "name": "Bの前輪アップ(v6で削除。4.4〜6.0秒は chase-02 を延ばして埋めた)",
+   "out_frames": null,
+   "out_sec": null,
+   "source": []
+  },
+  {
+   "id": "chase-04",
+   "scene": "追跡",
+   "name": "Aの尾部からBを振り返る",
+   "out_frames": [
+    144,
+    191
+   ],
+   "out_sec": [
+    6.0,
+    8.0
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      144,
+      191
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-05",
+   "scene": "追跡",
+   "name": "Aに寄った横の並走",
+   "out_frames": [
+    192,
+    230
+   ],
+   "out_sec": [
+    8.0,
+    9.625
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      192,
+      230
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-06",
+   "scene": "追跡",
+   "name": "クレーン下降(交通の上から)",
+   "out_frames": [
+    231,
+    278
+   ],
+   "out_sec": [
+    9.625,
+    11.625
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      231,
+      278
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-07",
+   "scene": "追跡",
+   "name": "正面ドリーイン(傾き)",
+   "out_frames": [
+    279,
+    311
+   ],
+   "out_sec": [
+    11.625,
+    13.0
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      279,
+      311
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-08",
+   "scene": "追跡",
+   "name": "追う側Bの視点",
+   "out_frames": [
+    312,
+    345
+   ],
+   "out_sec": [
+    13.0,
+    14.417
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      312,
+      345
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-09",
+   "scene": "追跡",
+   "name": "Aがトラックをかすめる",
+   "out_frames": [
+    346,
+    383
+   ],
+   "out_sec": [
+    14.417,
+    16.0
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      346,
+      383
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-10",
+   "scene": "追跡",
+   "name": "Bの背後を低く(Aは遠く)",
+   "out_frames": [
+    384,
+    419
+   ],
+   "out_sec": [
+    16.0,
+    17.5
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      384,
+      419
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-11",
+   "scene": "追跡",
+   "name": "Aのヘルメットアップ",
+   "out_frames": [
+    420,
+    455
+   ],
+   "out_sec": [
+    17.5,
+    19.0
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      420,
+      455
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-12",
+   "scene": "追跡",
+   "name": "2回目のすれ違い",
+   "out_frames": [
+    456,
+    503
+   ],
+   "out_sec": [
+    19.0,
+    21.0
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      456,
+      503
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-13",
+   "scene": "追跡",
+   "name": "横並び",
+   "out_frames": [
+    504,
+    561
+   ],
+   "out_sec": [
+    21.0,
+    23.417
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      504,
+      561
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-14",
+   "scene": "追跡",
+   "name": "正面・ニアミス",
+   "out_frames": [
+    562,
+    599
+   ],
+   "out_sec": [
+    23.417,
+    25.0
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      562,
+      599
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "chase-15",
+   "scene": "追跡",
+   "name": "引き(離れていく)",
+   "out_frames": [
+    600,
+    719
+   ],
+   "out_sec": [
+    25.0,
+    30.0
+   ],
+   "source": [
+    {
+     "tag": "r31",
+     "src_frames": [
+      600,
+      719
+     ],
+     "res": "1280x720",
+     "samples": 40
+    }
+   ]
+  },
+  {
+   "id": "sequel-01",
+   "scene": "続編",
+   "name": "Bの後ろ上から引き(AとB)",
+   "out_frames": [
+    720,
+    767
+   ],
+   "out_sec": [
+    30.0,
+    32.0
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      0,
+      47
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-02",
+   "scene": "続編",
+   "name": "Bのライダーを斜め前から",
+   "out_frames": [
+    768,
+    803
+   ],
+   "out_sec": [
+    32.0,
+    33.5
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      48,
+      83
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-03",
+   "scene": "続編",
+   "name": "Aの肩越し、奥にB",
+   "out_frames": [
+    804,
+    839
+   ],
+   "out_sec": [
+    33.5,
+    35.0
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      84,
+      119
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-04",
+   "scene": "続編",
+   "name": "銃口を横から",
+   "out_frames": [
+    840,
+    875
+   ],
+   "out_sec": [
+    35.0,
+    36.5
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      120,
+      124
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r46",
+     "src_frames": [
+      125,
+      125
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r44",
+     "src_frames": [
+      126,
+      150
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r46",
+     "src_frames": [
+      151,
+      151
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r44",
+     "src_frames": [
+      152,
+      155
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-05",
+   "scene": "続編",
+   "name": "路面すれすれ、後ろから(Aが避ける)",
+   "out_frames": [
+    876,
+    911
+   ],
+   "out_sec": [
+    36.5,
+    38.0
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      156,
+      177
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r46",
+     "src_frames": [
+      178,
+      178
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r44",
+     "src_frames": [
+      179,
+      191
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-06",
+   "scene": "続編",
+   "name": "斜め前上から2台",
+   "out_frames": [
+    912,
+    947
+   ],
+   "out_sec": [
+    38.0,
+    39.5
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      192,
+      203
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r46",
+     "src_frames": [
+      204,
+      204
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r44",
+     "src_frames": [
+      205,
+      227
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-07",
+   "scene": "続編",
+   "name": "俯瞰(高い位置の後ろから)",
+   "out_frames": [
+    948,
+    967
+   ],
+   "out_sec": [
+    39.5,
+    40.333
+   ],
+   "source": [
+    {
+     "tag": "r46",
+     "src_frames": [
+      228,
+      247
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-08",
+   "scene": "続編",
+   "name": "Aの後輪に命中(パンク、ふらつく)",
+   "out_frames": [
+    968,
+    991
+   ],
+   "out_sec": [
+    40.333,
+    41.333
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      248,
+      249
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r46",
+     "src_frames": [
+      250,
+      250
+     ],
+     "res": "960x540",
+     "samples": 24
+    },
+    {
+     "tag": "r44",
+     "src_frames": [
+      251,
+      271
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-09",
+   "scene": "続編",
+   "name": "路肩側から低く、追い越し",
+   "out_frames": [
+    992,
+    1015
+   ],
+   "out_sec": [
+    41.333,
+    42.333
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      272,
+      295
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-10",
+   "scene": "続編",
+   "name": "路面すれすれ(世界に固定)。Bが近づいて滑る",
+   "out_frames": [
+    1016,
+    1055
+   ],
+   "out_sec": [
+    42.333,
+    44.0
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      296,
+      335
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  },
+  {
+   "id": "sequel-11",
+   "scene": "続編",
+   "name": "引き(世界に固定)",
+   "out_frames": [
+    1056,
+    1079
+   ],
+   "out_sec": [
+    44.0,
+    45.0
+   ],
+   "source": [
+    {
+     "tag": "r44",
+     "src_frames": [
+      336,
+      359
+     ],
+     "res": "960x540",
+     "samples": 24
+    }
+   ]
+  }
+ ]
+}
