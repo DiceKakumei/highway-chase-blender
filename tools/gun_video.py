@@ -281,9 +281,9 @@ def render_main(argv):
         except Exception:
             pass
         return lo
-    area('key', (0.75, 0.55, 0.85), 320, 0.55, (1.0, 0.96, 0.90))
-    area('fill', (-0.85, 0.20, 0.45), 110, 0.8, (0.85, 0.92, 1.0))
-    area('rim', (-0.15, -0.85, 0.65), 230, 0.35, (1.0, 1.0, 1.0))
+    area('key', (0.75, 0.55, 0.85), 65, 0.55, (1.0, 0.96, 0.90))
+    area('fill', (-0.85, 0.20, 0.45), 22, 0.8, (0.85, 0.92, 1.0))
+    area('rim', (-0.15, -0.85, 0.65), 45, 0.35, (1.0, 1.0, 1.0))
 
     # ---- 銃(キットそのまま)
     parts, rep = GK.build_parts(GLB)
@@ -356,7 +356,7 @@ def render_main(argv):
     fo = bpy.data.objects.new('flash', fme); sc.collection.objects.link(fo); fo.location = MUZZLE
     fl = bpy.data.lights.new('flashL', 'POINT'); fl.energy = 0.0; fl.color = (1.0, 0.75, 0.4); fl.shadow_soft_size = 0.03
     flo = bpy.data.objects.new('flashL', fl); sc.collection.objects.link(flo); flo.parent = fo; flo.location = (0, 0.12, 0)
-    FS = 0.8; FE = 30.0
+    FS = 0.8; FE = 1.5
     fo.scale = (0.001,) * 3; fo.keyframe_insert('scale', frame=-5); fl.energy = 0.0; fl.keyframe_insert('energy', frame=-5)
     for sh in SHOTS:
         F = sh['F']
