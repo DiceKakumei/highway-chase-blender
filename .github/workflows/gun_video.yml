@@ -1,0 +1,139 @@
+name: gun_video
+# 拳銃の単品動画(12秒・24fps・4カット・6発・効果音つき)。 コマを分割して headless Blender (Cycles, CPU) で描画し、Release g<番号> に添付する。
+#   確認(数コマだけ): gh workflow run gun_video.yml -f frames="12,15,90,168,230,280" -f chunks=3 -f samples=24 -f res=960x540
+#   本番(全288コマ):   gh workflow run gun_video.yml -f frames="0-287" -f chunks=20 -f samples=24 -f res=960x540
+# 全コマ(0-287)が揃ったら mp4(音つき)を gun_video.mp4 として、揃わなければ確認用の一覧 sheet.jpg を Release に上げる。
+on:
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: "コマ (例: 12,15 または 0-287)"
+        default: "12,15,90,168,230,280"
+      chunks:
+        description: "分割数(並列ジョブ数。20以下)"
+        default: "3"
+      samples:
+        default: "24"
+      res:
+        default: "960x540"
+permissions:
+  contents: write
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      tag: ${{ steps.m.outputs.tag }}
+    steps:
+      - id: m
+        env:
+          FRAMES: ${{ inputs.frames }}
+          CHUNKS: ${{ inputs.chunks }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          fr = []
+          for part in os.environ['FRAMES'].split(','):
+              part = part.strip()
+              if not part: continue
+              if '-' in part:
+                  a, b = part.split('-'); fr += list(range(int(a), int(b) + 1))
+              else:
+                  fr.append(int(part))
+          n = max(1, min(int(os.environ['CHUNKS']), len(fr), 20))
+          items = []
+          for i in range(n):
+              # 重いコマが偏らないよう、飛び飛びに配る
+              sub = fr[i::n]
+              if sub:
+                  items.append({"idx": "%03d" % i, "frames": ",".join(str(f) for f in sub)})
+          print("matrix=" + json.dumps({"include": items}))
+          print("tag=g${{ github.run_number }}")
+          PY
+      - run: gh release create "g${{ github.run_number }}" --title "gun_video ${{ github.run_number }}" --notes "frames=${{ inputs.frames }} samples=${{ inputs.samples }} res=${{ inputs.res }}" --repo "${{ github.repository }}"
+        env: { GH_TOKEN: "${{ github.token }}" }
+  chunk:
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: bl
+        uses: actions/cache@v4
+        with:
+          path: blender
+          key: blender-5.0.1-linux-x64
+      - name: Download Blender
+        if: steps.bl.outputs.cache-hit != 'true'
+        run: |
+          curl -sL -o blender.tar.xz "https://download.blender.org/release/Blender5.0/blender-5.0.1-linux-x64.tar.xz"
+          tar -xf blender.tar.xz && mv blender-5.0.1-linux-x64 blender && rm blender.tar.xz
+      - name: Render
+        run: |
+          nproc
+          blender/blender --background --factory-startup --python tools/gun_video.py -- render --frames "${{ matrix.frames }}" --out out --samples "${{ inputs.samples }}" --res "${{ inputs.res }}" --idx "${{ matrix.idx }}" > render.log 2>&1 || { tail -60 render.log; exit 1; }
+          grep -E "^(BUILD|FRAME|TOTAL)|Error|Traceback|WARNING" render.log | head -60
+          ls out | head -40
+      - name: Upload
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          cp render.log out/log_${{ matrix.idx }}.txt
+          tar -cf png-${{ matrix.idx }}.tar -C out .
+          ls -la png-${{ matrix.idx }}.tar
+          gh release upload "${{ needs.prep.outputs.tag }}" png-${{ matrix.idx }}.tar --clobber --repo "${{ github.repository }}"
+  join:
+    needs: [prep, chunk]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk ffmpeg
+      - run: pip install -q numpy pillow
+      - name: Collect
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          mkdir -p dl png
+          gh release download "${{ needs.prep.outputs.tag }}" -p "png-*.tar" -D dl --repo "${{ github.repository }}"
+          for f in dl/*.tar; do tar -xf "$f" -C png; done
+          ls png/*.png | wc -l
+          python3 - <<'PY'
+          import json, glob
+          fr = []
+          for p in sorted(glob.glob('png/timing_*.json')):
+              d = json.load(open(p)); fr += d['frames']; print(p, 'build', d['build_s'])
+          rs = [f['render_s'] for f in fr]
+          if rs: print('frames', len(rs), 'render s/frame: mean %.1f min %.1f max %.1f total %.0f' % (sum(rs) / len(rs), min(rs), max(rs), sum(rs)))
+          json.dump(fr, open('timing.json', 'w'))
+          PY
+      - name: Video or sheet
+        run: |
+          N=$(ls png/[0-9][0-9][0-9][0-9].png | wc -l)
+          if [ "$N" = "288" ]; then
+            python3 tools/gun_video.py mux png assets/gun_video_audio.wav gun_video.mp4
+            ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,width,height,r_frame_rate -show_entries format=duration,size -of default=nw=1 gun_video.mp4
+            ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate -of default=nw=1 gun_video.mp4
+          fi
+          python3 - <<'PY'
+          import glob, os
+          from PIL import Image, ImageDraw
+          fs = sorted(glob.glob('png/[0-9][0-9][0-9][0-9].png'))
+          step = max(1, len(fs) // 24)
+          fs = fs[::step][:24]
+          ims = [Image.open(f).convert('RGB') for f in fs]
+          w, h = ims[0].size; tw = 640; th = int(h * tw / w); cols = 3; rows = (len(ims) + cols - 1) // cols
+          M = Image.new('RGB', (cols * tw, rows * th), (30, 30, 30))
+          for i, (f, im) in enumerate(zip(fs, ims)):
+              im = im.resize((tw, th)); d = ImageDraw.Draw(im); d.text((8, 6), 'frame ' + os.path.basename(f)[:4], fill=(255, 255, 0))
+              M.paste(im, ((i % cols) * tw, (i // cols) * th))
+          M.save('sheet.jpg', quality=88)
+          PY
+      - name: Upload
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          FILES="sheet.jpg timing.json"
+          if [ -f gun_video.mp4 ]; then FILES="$FILES gun_video.mp4"; else zip -q -j png.zip png/*.png; FILES="$FILES png.zip"; fi
+          gh release upload "${{ needs.prep.outputs.tag }}" $FILES --clobber --repo "${{ github.repository }}"
