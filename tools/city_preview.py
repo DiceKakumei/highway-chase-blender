@@ -12,7 +12,7 @@ sys.path[:0] = [os.path.join(ROOT, 'chase'), HERE]
 ARGV = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else ['out']
 OUT = ARGV[0]; os.makedirs(OUT, exist_ok=True)
 PRM = json.load(open(ARGV[1])) if len(ARGV) > 1 else {}
-SAMPLES = int(PRM.get('samples', 32)); RES = PRM.get('res', [800, 450]); WHICH = PRM.get('which', ['old', 'new']); EMIT = float(PRM.get('emit', 3.0))
+SAMPLES = int(PRM.get('samples', 32)); RES = PRM.get('res', [800, 450]); WHICH = PRM.get('which', ['old', 'new']); EMIT = float(PRM.get('emit', 8.0))
 EXPO = float(PRM.get('exposure', 0.0)); WORLD_NIGHT = float(PRM.get('world_night', 0.04))
 
 
@@ -36,7 +36,7 @@ ONLY = PRM.get('views')
 
 def find_ground_view(city):
     """地上の目線(1ブロック): 両側に建物が並ぶ、高架から少し離れた道の区間を探す。 -> dict(pos, tgt, fov)"""
-    vg = ck.VertexGrid(city)
+    vg = ck.VertexGrid(city); vgk = ck.VertexGrid(city, skip_house=True)
     best = None
     for r in city['roads']:
         if r['c'] not in ('tertiary', 'residential', 'unclassified', 'secondary') or r['w'] < 5.5:
@@ -52,7 +52,7 @@ def find_ground_view(city):
             gl, gr = ck.side_gaps(seg, vg)
             if gl is None or gr is None:
                 continue
-            P = vg.query_box(m[0] - 40, m[1] - 40, m[0] + 40, m[1] + 40)
+            P = vgk.query_box(m[0] - 45, m[1] - 45, m[0] + 45, m[1] + 45)
             score = len(P) - 4.0 * abs(gl - gr)
             if best is None or score > best[0]:
                 best = (score, seg, gl, gr, r['w'], r['c'])

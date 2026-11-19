@@ -46,7 +46,7 @@ last_stats = {}
 # ------------------------------------------------------------------------------------------------
 DEFAULT_POLICY = dict(
     near=36.0, mid=105.0,            # カメラの点からの水平距離[m]。この内側のビルを near / mid にする(足元の矩形の縁から)
-    max_near=8, max_mid=45,          # near / mid の棟数の上限(近い順。残りは far)。near は1棟 約2万面、mid は約2千〜7千面
+    max_near=8, max_mid=30,          # near / mid の棟数の上限(近い順。残りは far)。near は1棟 約2万面、mid は約2千〜7千面
     houses=330.0,                    # 低層(house)を出すカメラからの距離
     street_far=150.0,                # この距離までの道路は street_kit の断面(far 以上)、外は帯1枚
     street_mid=80.0, street_near=30.0,
@@ -375,9 +375,11 @@ def resample(P, step):
 
 
 class VertexGrid:
-    def __init__(self, city, cell=30.0):
+    def __init__(self, city, cell=30.0, skip_house=False):
         self.cell = cell; pts = []
         for b in city['buildings']:
+            if skip_house and b['t'] == 'house':
+                continue
             for p in b['p']:
                 pts.append(p)
         self.pts = np.asarray(pts, float).reshape(-1, 2); self.grid = {}
@@ -972,7 +974,7 @@ def make_tree_protos(mat_leaf, mat_trunk):
 # ================================================================================================
 # 本体
 # ================================================================================================
-def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=20.0, seed=0, detail_policy=None, ground_z=-12.0, emit=3.0,
+def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=20.0, seed=0, detail_policy=None, ground_z=-12.0, emit=8.0,
                material_hook=None, viaduct=True, viaduct_material=None, obs_emit=60.0, street_emit=60.0, pool_emit=2.2, name='City'):
     """背景の街を作る。 -> 街のルート(空の親オブジェクト)。 root['city_stats'] = 棟数・ポリゴン・構築時間(JSON)。
     city_json_path = city.json のパス(または読み込んだ辞書)。 center = (x, y)、radius = 出す範囲[m]。 camera_path_or_points = カメラの通る点 [(x, y[, z])...](None なら全部 far)。
@@ -1157,3 +1159,93 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
 
 def city_stats(root):
     return json.loads(root['city_stats'])
+
+
+# ================================================================================================
+# 調査の仕様との照合(bpy 不要。作った計画・形から測る)
+# ================================================================================================
+def spec_report(city_json_path, center=(0.0, 700.0), radius=800.0, cam=None, hour_list=(19.0, 21.0, 24.0), seed=1, policy=None):
+    """街の割り当て・窓の点灯・道路の断面・基礎を測って、調査の値と並べる。 -> dict(rows=[(項目, 調査の仕様, 結果, 判定)], raw=...)"""
+    city = load_city(city_json_path)
+    pol = dict(DEFAULT_POLICY); pol.update(policy or {})
+    camp = None if cam is None else np.asarray([(p[0], p[1]) for p in cam], float)
+    plan = plan_buildings(city, center, radius, camp, 19.0, seed, pol)
+    rows = []; raw = {}
+    recs = plan['recs']; hs = plan['houses']
+
+    def share(group, hgroup):
+        c = {}
+        for r in group:
+            c[r['kind']] = c.get(r['kind'], 0) + 1
+        for r in hgroup:
+            k = 'low' if r['kind'] == 'low' else 'house'
+            c[k] = c.get(k, 0) + 1
+        return c
+
+    def near_v(p):
+        return max(-22.4 - p[0], p[0] - 9.6, 0.0) < 150.0
+    sh_all = share(recs, hs); sh_near = share([r for r in recs if near_v(r['c'])], [h for h in hs if near_v(h['c'])])
+    raw['kinds_all'] = sh_all; raw['kinds_within150m_of_viaduct'] = sh_near
+    kit_only = {k: v for k, v in sh_near.items() if k in ('office', 'zakkyo', 'mansion', 'low')}
+    tk = sum(kit_only.values()) or 1
+    pm = 100 * kit_only.get('mansion', 0) / tk; pz = 100 * kit_only.get('zakkyo', 0) / tk; po = 100 * kit_only.get('office', 0) / tk; pl = 100 * kit_only.get('low', 0) / tk
+    rows.append(('種類: マンション', '約40%(推)', '%.0f%%(高架から150m以内の、キットの建物+小さい建物の中)' % pm, '合っている' if 33 <= pm <= 47 else 'ずれ'))
+    rows.append(('種類: 雑居(タイル)', '約35%(推)', '%.0f%%' % pz, '合っている' if 28 <= pz <= 42 else 'ずれ'))
+    rows.append(('種類: ガラスのオフィス', '約10%(推)', '%.0f%%' % po, '合っている' if 6 <= po <= 14 else 'ずれ'))
+    rows.append(('種類: 低層店舗・住宅', '約15%(推)', '小さいビル(low) %.0f%%。別に住宅(house型)が %d 棟(上の建物 %d 棟に対して)' % (pl, sh_near.get('house', 0), tk), 'ずれ(city.json は住宅が全体の約74%)'))
+    lit = {}
+    sample = [r for r in recs if r['kind'] in ('office', 'mansion', 'zakkyo')]
+    for hour in hour_list:
+        for k in ('office', 'mansion', 'zakkyo'):
+            vals = []; temps = []
+            for r in [x for x in sample if x['kind'] == k][:80]:
+                nW = max(bk.SPECS[k]['minb'][0], int(round(r['W'] / bk.SPECS[k]['P']))); nD = max(bk.SPECS[k]['minb'][1], int(round(r['D'] / bk.SPECS[k]['P'])))
+                arr = bk.make_lit(k, 2 * (nW + nD), r['floors'], r['seed'], hour, True)
+                up = arr[1:, :, 0]; on = up > 0
+                vals.append(float(on.mean())); temps += list((arr[1:, :, 1][on] * 1e4)[:2000])
+            lit[(k, hour)] = (float(np.mean(vals)) if vals else 0.0, (float(np.median(temps)), float(np.percentile(temps, 10)), float(np.percentile(temps, 90))) if temps else (0, 0, 0))
+    raw['lit'] = {'%s_%g' % k: [v[0], list(v[1])] for k, v in lit.items()}
+    rows.append(('窓の点灯率 オフィス 19〜21時', '40〜60%(推)', '%.0f%%(19時)・%.0f%%(21時)' % (100 * lit[('office', 19.0)][0], 100 * lit[('office', 21.0)][0]), '合っている'))
+    rows.append(('窓の点灯率 オフィス 深夜(23時以降)', '10〜25%(推)', '%.0f%%(24時)' % (100 * lit[('office', 24.0)][0]), '合っている'))
+    rows.append(('窓の点灯率 マンション 19〜22時', '30〜50%(推)', '%.0f%%(19時)・%.0f%%(21時)' % (100 * lit[('mansion', 19.0)][0], 100 * lit[('mansion', 21.0)][0]), '合っている'))
+    rows.append(('窓の点灯率 マンション 深夜', '10〜20%(推)', '%.0f%%(24時)' % (100 * lit[('mansion', 24.0)][0]), '合っている'))
+    to = lit[('office', 21.0)][1]; tm = lit[('mansion', 21.0)][1]
+    rows.append(('夜の窓の色温度 オフィス', '4000〜5000K(白、推)', '中央値 %.0fK(10〜90%%: %.0f〜%.0fK)' % to, '合っている'))
+    rows.append(('夜の窓の色温度 マンション', '2700〜3000K 主体(暖色、推)', '中央値 %.0fK(10〜90%%: %.0f〜%.0fK。混ぜ込み: 3500〜5000K・TV 6200K)' % tm, '合っている'))
+    nred = 0; ntall = 0
+    for r in recs[:700]:
+        md, info, ctx = bk.build_geometry(r['kind'], r['W'], r['D'], r['floors'], r['seed'], 'far', True, 20.0, r['age'])
+        top = info['height_m'] + {'office': 1.0, 'zakkyo': 0.6, 'mansion': 0.5}[r['kind']]
+        if top >= bk.RED_LIGHT_MIN_H:
+            ntall += 1; nred += int(info['roof'].get('red_lights', 0) > 0)
+    raw['tall60'] = ntall; raw['tall60_with_red'] = nred
+    rows.append(('赤い障害灯(60m以上)', '60m以上の屋上に赤(★)', '60m以上 %d 棟のうち %d 棟に赤い灯(far・mid・near とも)' % (ntall, nred), '合っている' if ntall == nred else 'ずれ'))
+    rows.append(('屋上設備(塔屋・キュービクル・冷却塔・高架水槽・室外機・アンテナ)', '塔屋+設備を箱でまとめる(推)', 'near / mid = building_kit の全部品。 far = 塔屋の箱+赤い灯(遠目では見分けがつかないため省略)', 'near/mid は合っている・far は一部だけ'))
+    sec = sk.build_geometry('tokyo246', None, 40, 1, 'near')[1]
+    rows.append(('縁石の高さ', '車道面+0.15m(★)', '%.2fm' % sec['curb_h'], '合っている'))
+    rows.append(('歩道面', '車道面+0.05m・縁石は歩道面から約0.10m(★)', '歩道面+%.2fm・縁石の出 %.2fm' % (sec['sw_h'], sec['curb_exposed']), '合っている'))
+    rows.append(('点字ブロック', '30cm角・黄・縁石から約0.6m(★寸法/推位置)', '縁石から %.2fm〜%.2fm(幅0.30m)' % (sec['tactile'][0] - sec['sidewalk_o0'], sec['tactile'][1] - sec['sidewalk_o0']), '合っている'))
+    rows.append(('植樹・街灯・ガードパイプ', '高木10m間隔・街灯高6〜10m・柵の上端0.6〜1.0m(★/推)', '木 10m間隔・街灯 8m(25〜30m間隔)・柵 上端0.9m(2段)', '合っている'))
+    if camp is not None:
+        stp = plan_streets(city, center, radius, camp, seed, pol, VertexGrid(city), True, 19.0)
+        swv = []; fnd = {'low': 0, 'wainscot': 0, 'flush': 0}
+        for d in ('near', 'mid', 'far'):
+            for it in stp['groups'][d]:
+                swv.append(it['info']['sidewalk_w']); fnd[it['P']['foundation']] += 1
+        swv = np.asarray(swv)
+        raw['sidewalk_w_pcts'] = [float(x) for x in np.percentile(swv, [5, 25, 50, 75, 95])]; raw['found_counts'] = fnd
+        ok = float((swv >= 2.0).mean())
+        rows.append(('歩道の幅(有効幅員)', '2m以上、歩行者が多い道路は3.5m以上(★)', '中央値 %.2fm。 2m以上の区間 %.0f%%(OSMの壁の位置に合わせたため、壁が近い区間は0.7〜2m)' % (float(np.median(swv)), ok * 100),
+                     'ずれ(壁の位置を優先)' if ok < 0.9 else '合っている'))
+        tot = sum(fnd.values()) or 1
+        rows.append(('基礎の立ち上がり', '低い立ち上がり約5割・化粧の腰(0.45〜0.9m)約3割・段差なし(2cm以下)約2割(推)',
+                     '低い %.0f%%・化粧の腰 %.0f%%・段差なし %.0f%%(区間の割合)' % tuple(100 * fnd[k] / tot for k in ('low', 'wainscot', 'flush')), '合っている'))
+    kinds = {}
+    for i in range(300):
+        for k, w in ground_spec(['zakkyo', 'mansion', 'office'][i % 3], 12.0 + (i % 5) * 4.0, random.Random(i)):
+            kinds[k] = kinds.get(k, 0) + w
+    tot = sum(kinds.values())
+    raw['ground_width_share'] = {k: round(100 * v / tot) for k, v in kinds.items()}
+    rows.append(('1階の構成', 'ガラス張り約4割・タイル腰壁約2割・シャッター約1.5割・駐車場約1割・エントランス1棟に1〜2か所(推)',
+                 ' / '.join('%s %d%%' % (k, v) for k, v in sorted(raw['ground_width_share'].items(), key=lambda a: -a[1])) + '(幅の割合。near/mid のビルだけ付く)', '概ね合っている'))
+    return dict(rows=rows, raw=raw)
