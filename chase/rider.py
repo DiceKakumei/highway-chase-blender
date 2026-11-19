@@ -2,15 +2,17 @@
 ボーンの動きは、Blender の IK を使わず、numpy で計算する(2関節の IK + 背骨の FK)。座標は「バイクのプロトタイプ空間」(x=右, y=前, z=上, 路面 z=0)。
   X_b = ボーン b の剛体の動き(プロトタイプ空間の 4x4)。 ポーズ行列 = X_b @ 静止行列。 基底(pose bone の loc/rot) = inv(rest_b) @ (inv(X_親) @ X_b) @ rest_b  (rig.py と同じ式)
 """
-import math, os, sys
+import json, math, os, sys
 import numpy as np
 import bpy
-from mathutils import Matrix, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 import rig as RG
 import sequel as SQ
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
+import hand_grip_core as HC   # noqa: E402  (numpy だけ。指ボーンの座標・重みの計算)
 CHAIN = ['Hips', 'Spine02', 'Spine01', 'Spine', 'neck', 'Head']
 ARMS = {'L': ('LeftArm', 'LeftForeArm', 'LeftHand'), 'R': ('RightArm', 'RightForeArm', 'RightHand')}
 LEGS = {'L': ('LeftUpLeg', 'LeftLeg', 'LeftFoot', 'LeftToeBase'), 'R': ('RightUpLeg', 'RightLeg', 'RightFoot', 'RightToeBase')}
@@ -26,7 +28,9 @@ K = {
     'knee_pole': (0.45, 0.9, 0.15),      # 膝の向き(前・外)
     'elbow_pole': (0.55, -0.35, -0.55),  # 肘の向き(外・後ろ・下)
     'chest_off': (0.10, 0.15, -0.14),    # 銃を抜くとき、右手が入る位置(胸の関節から。上着の内側。胴体に付いて動く)
-    'gun_grip_off': (0.0, 0.075, -0.045), # 手首から銃のグリップ中心まで(前腕の向きに、上に)。銃口の線が前腕の少し上に来るよう、グリップは前腕より下
+    # 手(Meshyのグローブ手 hand_open.glb + 指ボーン15本)。銃との位置は assets/bike_B2/hand_grip_poses.json の hand_to_gun(調査の仕様で決めた握り)。 手を拡大縮小するときは銃も同じ倍率(gun_scale)
+    'hand_wrist_m': (0.0065, 0.075, 0.002),   # メッシュ座標(C0ずらし後)で、ライダーの手首(RightHand ボーンの位置)に合わせる点。 y=0.075 は手首のしわ(手の幅が広がり始める所)。 これより手前(y<0.075)の袖口(カフ)は前腕の中に入る
+    'trig_pre': 0.18, 'trig_hold': 0.04, 'trig_rel': 0.26,   # 発砲の前に ready→fire へ 0.18 秒、発砲の直後(反動のピーク)まで保持、その後 0.26 秒で ready へ戻す
     'gun_scale': 1.0,
     'foot_down': (-0.46, 0.0),           # 横滑りのとき、左足を着く位置(バイクの左, 前)。ここは地面
 }
@@ -123,8 +127,8 @@ def build(R, root, proto, tag='BikeB'):
     # 銃
     gun = import_gun(R, d)
     flash = make_flash(R)
-    fist = make_fist(R)
-    rd = {'ao': ao, 'body': body, 'M': M, 'Mi': Mi, 'rest_p': rest_p, 'rest_mat': rest_mat, 'bones': bones, 'gun': gun, 'fist': fist, 'flash': flash, 'root': root,
+    hand = build_hand(R, d)
+    rd = {'ao': ao, 'body': body, 'M': M, 'Mi': Mi, 'rest_p': rest_p, 'rest_mat': rest_mat, 'bones': bones, 'gun': gun, 'hand': hand, 'flash': flash, 'root': root,
           'cfg': proto['rig'], 'len': {}, 'parent': {n: (b.parent.name if b.parent else None) for n, b in bones.items()}}
     L = {}
     for s in 'LR':
@@ -165,56 +169,88 @@ def import_gun(R, d):
     return o
 
 
-def _tube(p0, p1, r0, r1, n=10):
-    """p0 から p1 への円すい台(太さ r0 → r1、両端にふた)。 -> (頂点, 面)"""
-    p0 = np.array(p0, float); p1 = np.array(p1, float); ax = p1 - p0; ax /= np.linalg.norm(ax)
-    t = np.array([0, 0, 1.0]) if abs(ax[2]) < 0.9 else np.array([1.0, 0, 0])
-    u = np.cross(ax, t); u /= np.linalg.norm(u); v = np.cross(ax, u)
-    V = []; F = []
-    for q, r in ((p0, r0), (p1, r1)):
-        for i in range(n):
-            a = 2 * math.pi * i / n
-            V.append(tuple(q + r * (math.cos(a) * u + math.sin(a) * v)))
-    for i in range(n):
-        j = (i + 1) % n
-        F.append((i, j, n + j, n + i))
-    c0 = len(V); V.append(tuple(p0)); c1 = len(V); V.append(tuple(p1))
-    for i in range(n):
-        j = (i + 1) % n
-        F.append((c0, j, i)); F.append((c1, n + i, n + j))
-    return V, F
+def _slerp(a, b, t):
+    a = np.asarray(a, float); b = np.asarray(b, float)
+    d = float(a @ b)
+    if d < 0:
+        b = -b; d = -d
+    if d > 0.9995:
+        q = a + (b - a) * t
+    else:
+        th = math.acos(d); q = (math.sin((1 - t) * th) * a + math.sin(t * th) * b) / math.sin(th)
+    return q / np.linalg.norm(q)
 
 
-def _ellipsoid(c, r, nu=14, nv=9):
-    V = []; F = []
-    for iv in range(nv + 1):
-        th = math.pi * iv / nv
-        for iu in range(nu):
-            ph = 2 * math.pi * iu / nu
-            V.append((c[0] + r[0] * math.sin(th) * math.cos(ph), c[1] + r[1] * math.sin(th) * math.sin(ph), c[2] + r[2] * math.cos(th)))
-    for iv in range(nv):
-        for iu in range(nu):
-            a = iv * nu + iu; b = iv * nu + (iu + 1) % nu
-            F.append((a, b, b + nu, a + nu))
-    return V, F
+def fire_weight(tau):
+    """人さし指の引き金の重み 0(ready=フレームに沿って伸ばす)〜1(fire=引き金に掛ける)。 発砲の約0.18秒前から引き始め、発砲の瞬間に引き切り、直後に放す。"""
+    w = 0.0
+    pre, hold, rel = K['trig_pre'], K['trig_hold'], K['trig_rel']
+    for ft in SQ.FIRES:
+        d = tau - ft
+        if -pre <= d < 0:
+            x = SQ.sm((d + pre) / pre)
+        elif 0 <= d < hold:
+            x = 1.0
+        elif hold <= d < hold + rel:
+            x = 1.0 - SQ.sm((d - hold) / rel)
+        else:
+            x = 0.0
+        w = max(w, x)
+    return w
 
 
-def make_fist(R):
-    """銃を握った手(グローブ)。Meshyの手は指のボーンが無く、開いた平らな手なので、銃を貫通する。
-    銃を持つあいだは、Meshyの右手を畳み(スケール≒0)、代わりにこの拳を銃と一緒に動かす。銃のローカル座標: x=右, y=銃口, z=上、原点=グリップの中心。"""
-    V = []; F = []
-    def add(vf):
-        n = len(V); V.extend(vf[0]); F.extend([tuple(i + n for i in f) for f in vf[1]])
-    add(_ellipsoid((0.0, -0.014, -0.008), (0.037, 0.047, 0.036)))                        # 手のひら・手の甲
-    for z in (-0.034, -0.016, 0.002):                                                    # 中指・薬指・小指: グリップの前側を巻く
-        add(_tube((-0.024, 0.041, z), (0.040, 0.041, z), 0.0098, 0.0098))
-    add(_tube((0.024, 0.018, 0.030), (0.024, 0.088, 0.030), 0.0088, 0.0078))              # 人さし指: フレームに沿ってまっすぐ(引き金の外)
-    add(_tube((-0.028, -0.012, 0.010), (-0.028, 0.062, 0.016), 0.0098, 0.0085))           # 親指: 銃の左側に沿う
-    add(_tube((0.0, -0.040, -0.002), (0.0, -0.078, 0.046), 0.031, 0.028))                # 手首へつなぐ
-    mat = R.simple_material('FistGlove', (0.05, 0.10, 0.34), rough=0.5)
-    o = R.mesh_object('fist', V, F, mats=[mat], smooth=True)
-    o.rotation_mode = 'QUATERNION'
-    return o
+FINGER_KEYED = ('Index1', 'Index2', 'Index3')       # ready と fire で違う骨(ほかは同じ)
+
+
+def build_hand(R, d):
+    """指ボーン付きの手(Meshyのグローブ hand_open.glb)。 tools/hand_rig_meshy.build() と同じ作り方(メッシュはglTF座標に戻して C0 だけずらす、重みは hand_grip_core)。
+    銃との位置・指の曲げは hand_grip_poses.json(調査の仕様で探した握り)。 -> dict(ao, ob, T = メッシュ→銃の座標 4x4, q = {state: {骨: クォータニオン}})"""
+    poses = json.load(open(os.path.join(d, 'hand_grip_poses.json'), encoding='utf-8'))
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.gltf(filepath=os.path.join(d, 'hand_open.glb'), import_shading='SMOOTH')
+    new = [o for o in bpy.data.objects if o not in before]
+    bpy.context.view_layer.update()
+    ob = [x for x in new if x.type == 'MESH'][0]
+    mw = ob.matrix_world.copy(); ob.parent = None; ob.data.transform(mw); ob.matrix_world = Matrix.Identity(4)
+    for x in new:
+        if x is not ob:
+            bpy.data.objects.remove(x)
+    me = ob.data
+    Mfix = Matrix(((1, 0, 0, -HC.C0[0]), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1)))        # Blender(Z上) -> glTF(Y上)、C0 だけずらす
+    me.transform(Mfix); me.update()
+    P = np.empty(len(me.vertices) * 3, np.float32); me.vertices.foreach_get('co', P); P = P.reshape(-1, 3).astype(float)
+    W, owner, _ = HC.compute_weights(P, HC.WEIGHT_VARIANTS['w0'])
+    for g in list(ob.vertex_groups):
+        ob.vertex_groups.remove(g)
+    for bi, b in enumerate(HC.BONES):
+        vg = ob.vertex_groups.new(name=b)
+        for i in np.nonzero(W[:, bi] > 1e-3)[0]:
+            vg.add([int(i)], float(W[i, bi]), 'REPLACE')
+    arm = bpy.data.armatures.new('gloveArm'); ao = bpy.data.objects.new('gloveArm', arm); bpy.context.scene.collection.objects.link(ao)
+    bpy.context.view_layer.objects.active = ao; bpy.ops.object.mode_set(mode='EDIT'); eb = arm.edit_bones
+    h = eb.new('Hand'); h.head = tuple(HC.sh(HC.HAND_HEAD)); h.tail = tuple(HC.sh(HC.HAND_TAIL)); h.align_roll((0, 0, 1))
+    for c in HC.CHAINS:
+        par = h; J = HC.JOINTS[c]
+        for i in range(3):
+            b = eb.new(c + str(i + 1)); b.head = tuple(J[i]); b.tail = tuple(J[i + 1]); b.align_roll((0, 0, 1)); b.parent = par; par = b
+    bpy.ops.object.mode_set(mode='OBJECT')
+    ob.parent = ao; ob.matrix_parent_inverse = Matrix.Identity(4)
+    md = ob.modifiers.new('arm', 'ARMATURE'); md.object = ao
+    q = {st: {n: np.array(v, float) for n, v in poses['states'][st]['pose_bone_quaternion_wxyz'].items()} for st in ('ready', 'fire')}
+    for pb in ao.pose.bones:
+        pb.rotation_mode = 'QUATERNION'
+        pb.rotation_quaternion = tuple(q['ready'][pb.name])          # 親指・ほかの指は2状態で同じ。 人さし指は key() が毎コマ補間する
+    for m in me.materials:
+        make_opaque(m)                                                # Meshyの材質は、アルファで半透明になることがある
+        R.vehicle_material(m, 'wheel', False)
+    try:
+        ob.cycles.use_deform_motion = False                           # スキンメッシュの変形モーションブラーは、半透明にぶれる原因(ライダーと同じ)
+    except Exception as e:
+        print('hand use_deform_motion:', e)
+    ao.rotation_mode = 'QUATERNION'
+    ob.hide_render = True
+    print('   hand: verts %d, bones %d, T[:3,3] %s' % (len(me.vertices), len(ao.pose.bones), np.round(np.array(poses['hand_to_gun'])[:3, 3], 4)))
+    return {'ao': ao, 'ob': ob, 'T': np.array(poses['hand_to_gun'], float), 'q': q}
 
 
 def make_flash(R):
@@ -345,9 +381,15 @@ def pose(rd, pz, root_M, A_world, tau):
     zz /= np.linalg.norm(zz); xx = np.cross(fR, zz)
     Rg = np.stack([xx, fR, zz], axis=1)
     rk = RG.rot3(xx, 0.20 * rec)
-    Rg = rk @ Rg
-    gun_M = np.eye(4); gun_M[:3, :3] = Rg; gun_M[:3, 3] = wrR + fR * K['gun_grip_off'][1] + Rg @ np.array([0.0, 0.0, K['gun_grip_off'][2]])
-    muz = np.eye(4); muz[:3, :3] = Rg; muz[:3, 3] = gun_M[:3, 3] + Rg @ np.array([0.0, 0.175, 0.07])
+    Rg = rk @ Rg                                                         # 反動: 手首を支点に、手と銃が一緒に跳ね上がる
+    # 銃は手と一体。 手首の点(メッシュの hand_wrist_m)が、ライダーの手首(IK の目標 wrR)に来る。 手→銃は hand_grip_poses.json の hand_to_gun(調査の仕様で決めた握り)
+    sc = K['gun_scale']; T = rd['hand']['T']
+    w_g = (T @ np.r_[np.asarray(K['hand_wrist_m'], float), 1.0])[:3] * sc       # 手首の点を、銃の座標で(拡大縮小ぶん)
+    gun_M = np.eye(4); gun_M[:3, :3] = Rg; gun_M[:3, 3] = wrR - Rg @ w_g
+    S4 = np.diag([sc, sc, sc, 1.0])
+    rd['_hand_M'] = gun_M @ S4 @ T                                       # メッシュ(手)→プロトタイプ空間
+    rd['_wrist'] = wrR; rd['_fore'] = fR
+    muz = np.eye(4); muz[:3, :3] = Rg; muz[:3, 3] = gun_M[:3, 3] + Rg @ (np.array([0.0, 0.175, 0.07]) * sc)
     flash_on = any(abs(tau - ft) < 0.5 / SQ.FPS for ft in SQ.FIRES)
     return basis, gun_M, gs['vis'], flash_on, muz
 
@@ -386,10 +428,17 @@ def key(rd, j, pz, root_M, A_world, tau):
     g.location = mm.to_translation(); g.rotation_quaternion = _cont(rd, 'gun', j, mm.to_quaternion())
     g.keyframe_insert('location', frame=j); g.keyframe_insert('rotation_quaternion', frame=j)
     g.hide_render = vis < 0.5; g.keyframe_insert('hide_render', frame=j)
-    fi = rd['fist']; fi.location = mm.to_translation(); fi.rotation_quaternion = _cont(rd, 'fist', j, mm.to_quaternion())
-    fi.keyframe_insert('location', frame=j); fi.keyframe_insert('rotation_quaternion', frame=j)
-    fi.hide_render = vis < 0.5; fi.keyframe_insert('hide_render', frame=j)
-    hb = rd['ao'].pose.bones['RightHand']; hs = 0.001 if vis >= 0.5 else 1.0         # 銃を持つあいだは、Meshyの開いた手を消す(拳に置き換える)
+    hd = rd['hand']; hm = Matrix(root_M @ rd['_hand_M']); hl, hr, hs_ = hm.decompose()      # 手(グローブ)は、手首に付けて、銃と一緒に動く
+    hd['ao'].location = hl; hd['ao'].rotation_quaternion = _cont(rd, 'hand', j, hr); hd['ao'].scale = hs_
+    for pp in ('location', 'rotation_quaternion', 'scale'):
+        hd['ao'].keyframe_insert(pp, frame=j)
+    hd['ob'].hide_render = vis < 0.5; hd['ob'].keyframe_insert('hide_render', frame=j)
+    fw = fire_weight(tau)                                               # 人さし指だけ ready→fire を補間(発砲の直前に引き金へ、直後に戻す)
+    for bn in FINGER_KEYED:
+        pb = hd['ao'].pose.bones[bn]
+        pb.rotation_quaternion = _cont(rd, 'h_' + bn, j, Quaternion(tuple(_slerp(hd['q']['ready'][bn], hd['q']['fire'][bn], fw))))
+        pb.keyframe_insert('rotation_quaternion', frame=j)
+    hb = rd['ao'].pose.bones['RightHand']; hs = 0.001 if vis >= 0.5 else 1.0         # 銃を持つあいだは、Meshyの開いた手を消す(指ボーン付きのグローブ手に置き換える)
     hb.scale = (hs, hs, hs); hb.keyframe_insert('scale', frame=j)
     fl = rd['flash']['obj']; mw = Matrix(root_M @ muz)
     fl.location = mw.to_translation(); fl.rotation_quaternion = _cont(rd, 'flash', j, mw.to_quaternion())
