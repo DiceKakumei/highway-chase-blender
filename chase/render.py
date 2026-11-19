@@ -962,9 +962,9 @@ def build_vehicles():
     cars = []
     pick = M.rng(555)
     traffic = M.traffic()
-    hidden = SQ.hidden_cars(traffic) if seq else set()
-    if seq:
-        print('sequel: hidden cars %d of %d' % (len(hidden), len(traffic)))
+    rm = SQ.car_removals(traffic)                           # 続編の2台・カメラの邪魔になる車: いきなり消さず、邪魔になる直前のカット(前作の最後のカット含む)で消す
+    hidden = set()
+    print('car removals (world t): %s' % sorted(rm.items(), key=lambda a: a[1]))
     for i, c in enumerate(traffic):
         pal = c['pal']
         if c['kind'] == 'truck':
@@ -979,6 +979,8 @@ def build_vehicles():
         if name == 'veh_truck':
             bpy.data.objects['Car%03d_body' % i].pass_index = cab[1]
         inst['c'] = c
+        if i in rm:
+            inst['t_rm'] = rm[i]
         if c['dir'] > 0:
             inst['root'].rotation_euler = (0, 0, math.pi)
         cars.append(inst)
@@ -1074,7 +1076,8 @@ def apply_frame(S, cam, f, blur):
         if 'fx' in S:
             FX.key(S['fx'], j, tt - toff, None)
         for c in S['cars']:
-            key(c['root'], j, loc=(c['c']['x'], -M.pos_of(c['c'], tt), 0.0))
+            gone = 't_rm' in c and tt >= c['t_rm']
+            key(c['root'], j, loc=(c['c']['x'], -M.pos_of(c['c'], tt), -300.0 if gone else 0.0))     # 消す時刻以降は、地面の下へ
         for c in spin:
             d = c['c']['v'] * tt
             for w, r in c['wheels']:

@@ -269,6 +269,41 @@ def hidden_cars(cars):
     return out
 
 
+def _first_conflict(c, camp):
+    """続編(τ)で、車 c が最初に邪魔になる時刻 τ(2台・カメラ・Bが止まる場所のどれか)。邪魔にならなければ None"""
+    wc, lc = DIM[c['kind']]
+    sx, sz = stop_point()
+    end_in_zone = abs(c['x'] - sx) < 3.2 and sz - 80 < pos_of(c, TOFF + DUR) < sz + 25
+    for ti in np.arange(0.0, DUR + 1e-9, 0.1):
+        t = TOFF + ti
+        z = pos_of(c, t)
+        for (bx_, bz_, wide) in ((xA(t), zA(t), 1.4), (xB(t), zB(t), 2.4)):
+            if abs(z - bz_) < (lc + 2.4) / 2 + 3.0 and abs(c['x'] - bx_) < (wc + wide) / 2 + 0.8:
+                return float(ti)
+        p = camp[min(len(camp) - 1, int(round(ti / 0.1)))]
+        if p[1] < 4 and abs(z - p[2]) < lc / 2 + 4.0 and abs(c['x'] - p[0]) < wc / 2 + 2.2:
+            return float(ti)
+        if end_in_zone and z < sz + 25:                  # 最後にBの止まる場所のあたりに居座る車は、その場所に入る時刻から邪魔(Bの止まる場所を空ける)
+            return float(ti)
+    return None
+
+
+def car_removals(cars, margin=0.25):
+    """邪魔になる車を、いきなり消さず、「邪魔になる直前のカット」で消す。 -> {車の番号: 消す世界時刻[秒]}
+    ・続編のカット(CUTS)の切れ目のうち、邪魔になる時刻の margin 秒前より前で最後のもの。
+    ・続編の最初の約2秒で邪魔になる車(続編の頭、Bの目の前を走るトラックなど)は、前作の最後のカット(25.0秒)から消す。
+      前作の最後を見ていた人が、続編の1コマ目で「さっきのトラックが無い」と感じないよう、前作側で先に出さない。"""
+    camp = [shot_at(TOFF + ti)[0] for ti in np.arange(0.0, DUR + 0.2, 0.1)]
+    out = {}
+    for i, c in enumerate(cars):
+        tc = _first_conflict(c, camp)
+        if tc is None:
+            continue
+        cands = [TOFF + cu for cu in CUTS if TOFF + cu <= TOFF + tc - margin]
+        out[i] = max(cands) if cands else _M.CUTS[-1]
+    return out
+
+
 if __name__ == '__main__':
     for tau in (0, 2, 4, 5.5, 7, 9, 10, 11, 12, 12.2, 12.6, 13, 13.5, 14, 14.9, 15):
         t = TOFF + tau
