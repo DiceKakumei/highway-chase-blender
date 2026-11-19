@@ -5,6 +5,9 @@ on:
     inputs:
       script:
         default: "tools/hand_view.py"
+      params:
+        description: "スクリプトに渡すJSON(任意)"
+        default: ""
 permissions:
   contents: write
 jobs:
@@ -24,13 +27,31 @@ jobs:
           curl -sL -o blender.tar.xz "https://download.blender.org/release/Blender5.0/blender-5.0.1-linux-x64.tar.xz"
           tar -xf blender.tar.xz && mv blender-5.0.1-linux-x64 blender && rm blender.tar.xz
       - name: Run
+        env:
+          PARAMS: ${{ inputs.params }}
         run: |
-          blender/blender --background --factory-startup --python "${{ inputs.script }}" -- out > run.log 2>&1 || { tail -80 run.log; exit 1; }
-          grep -vE "^(Blender|Read|Fra:|Warning|$)" run.log | tail -60
+          ARGS=""
+          if [ -n "$PARAMS" ]; then echo "$PARAMS" > params.json; ARGS="params.json"; fi
+          blender/blender --background --factory-startup --python "${{ inputs.script }}" -- out $ARGS > run.log 2>&1 || { tail -80 run.log; exit 1; }
+          grep -E "^(hand|PEN|rider|ERR)|Error|Traceback" run.log | tail -60
+          pip install -q pillow
+          python3 - <<'PY'
+          import glob, os
+          from PIL import Image, ImageDraw
+          fs = sorted(glob.glob('out/*.png'))
+          if fs:
+              ims = [Image.open(f).convert('RGB').resize((400, 400)) for f in fs]
+              cols = 4; rows = (len(ims) + cols - 1) // cols
+              sh = Image.new('RGB', (cols * 400, rows * 400), (30, 30, 30))
+              for i, (im, f) in enumerate(zip(ims, fs)):
+                  d = ImageDraw.Draw(im); d.text((6, 6), os.path.basename(f), fill=(255, 255, 0))
+                  sh.paste(im, ((i % cols) * 400, (i // cols) * 400))
+              sh.save('sheet.jpg', quality=88)
+          PY
           cd out && zip -q ../png.zip *.png
       - name: Upload
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           tag="h${{ github.run_number }}"
           gh release create "$tag" --title "hand $tag" --notes "script=${{ inputs.script }}" --repo "${{ github.repository }}"
-          gh release upload "$tag" png.zip run.log --clobber --repo "${{ github.repository }}"
+          gh release upload "$tag" png.zip run.log sheet.jpg --clobber --repo "${{ github.repository }}"
