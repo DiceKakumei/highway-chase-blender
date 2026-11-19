@@ -114,7 +114,7 @@ def room(g, x0, x1, z0, z1, rd, opt, d0=0.0, cut=None, fl=None):
     g.front(x0, x1, z0, z1, rd, 'room_wall')
     if far:
         return
-    g.side(x0, d0, rd, z0, z1, 'room_wall', +1); g.side(x1, d0, rd, z0, z1, 'room_wall', -1)
+    g.side(x0 + 0.004, d0, rd, z0, z1, 'room_wall', +1); g.side(x1 - 0.004, d0, rd, z0, z1, 'room_wall', -1)
     parts = [(x0, x1, d0)] if cut is None else [(x0, cut[0], d0), (cut[1], x1, d0), (cut[0], cut[1], max(d0, cut[2]))]
     for a, b, dd in parts:
         g.flat(a, b, dd, rd, z0, fl or 'room_floor', True); g.flat(a, b, dd, rd, z1, 'room_ceiling', False)
@@ -291,6 +291,11 @@ def build_geometry(kind, width, height, seed=0, detail='near', depth=10.0, base_
     g = G(float(width), float(depth), float(height), float(base_z), float(gl), rng, night, detail)
     g.dims['kind'] = kind
     BUILD[kind](g, opts)
+    if opts.get('shell', True):      # 外側の殻(左右の壁・背面・屋根)。 上の階はここから(屋根の面は 2階の床の高さ)
+        W2 = g.W / 2; z0 = g.bz; z1 = g.bz + g.H
+        g.side(-W2, 0.0, g.D, z0, z1, 'wall', -1); g.side(W2, 0.0, g.D, z0, z1, 'wall', +1)
+        g.md.face([(W2, g.yf + g.D, z0), (-W2, g.yf + g.D, z0), (-W2, g.yf + g.D, z1), (W2, g.yf + g.D, z1)], 'wall', [(W2, z0), (-W2, z0), (-W2, z1), (W2, z1)])
+        g.flat(-W2, W2, 0.0, g.D, z1 - 0.004, 'wall', True)
     wcol = rng.randrange(len(WALLS)); lcol = rng.randrange(len(ROOMLIGHT))
     info = dict(kind=kind, width=g.W, depth=g.D, height=g.H, base_z=g.bz, top_z=g.bz + g.H, gl=g.gl, front_y=g.yf, gaps_x=[(round(a, 3), round(b, 3)) for a, b in g.gaps],
                 faces=g.md.nfaces(), detail=detail, seed=seed, dims=g.dims, wall_col=wcol, light_col=lcol, rail_kind=g.dims.get('rail_kind', 'silver'), fascia_col=g.dims.get('fascia_color', 0))
@@ -317,7 +322,7 @@ def build_material(role, info, night, name):
     # 夜の室内灯
     if role in ('room_wall', 'room_light', 'downlight'):
         lc = ROOMLIGHT[info['light_col']]
-        es = {'room_wall': (2.6 if night else 0.7), 'room_light': (14.0 if night else 4.0), 'downlight': (60.0 if night else 6.0)}[role]
+        es = {'room_wall': (1.4 if night else 0.45), 'room_light': (9.0 if night else 3.0), 'downlight': (60.0 if night else 6.0)}[role]
         b = principled(nt, **{'Roughness': 0.9})
         b.inputs['Emission Color'].default_value = (*lc, 1.0)
         if role == 'room_wall':

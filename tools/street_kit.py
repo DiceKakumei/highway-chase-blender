@@ -52,7 +52,7 @@ BASE = dict(
     driveways=[],                    # 車路の切り下げ [(s0, s1), ...] s = 中心線に沿った距離(平坦部の範囲)。すりつけ 0.75m★
     signal_at=None,                  # 信号柱を立てる s の一覧。None = 長さの 0.8 の位置に1本(near/mid)
     center_line='yellow',            # 中心線 'yellow' | 'white' | None
-    night=True, hour=20.0, lights=True, lamp_power=450.0,
+    night=True, hour=20.0, lights=True, lamp_power=2500.0,
     sides='L',                       # 'L' = 左(+Y)だけ / 'LR' = 両側
     smooth=True,
 )
@@ -828,6 +828,11 @@ def make_street_section(profile=None, centerline=None, length_or_curve=100.0, se
     uvl = me.uv_layers.new(name='UVMap')
     uvl.data.foreach_set('uv', np.asarray(md.UV, np.float32).ravel())
     me.polygons.foreach_set('material_index', np.asarray(md.MI, np.int32))
+    sm = [1 if md.roles[i] in ('leaf',) else 0 for i in md.MI]      # 木の葉の塊だけなめらかな陰影
+    try:
+        me.polygons.foreach_set('use_smooth', sm)
+    except Exception:
+        pass
     for m in mats:
         me.materials.append(m)
     me.update()

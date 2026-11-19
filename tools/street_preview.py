@@ -206,6 +206,12 @@ def shot_aerial(name, mode):
     render(sc, name)
 
 
+def shot_aerial2(name, mode):
+    sc, segs = view_scene(mode, 0)
+    set_cam(sc, (4.0, 0.5, 11.0), (34.0, 13.0, 0.5), 24)
+    render(sc, name)
+
+
 def shot_before(name, mode):
     """従来相当: 道路(車道)から直接ビルの壁が立つ。 city.py と同じ作り(歩道・基礎・1階の作り込みなし)を、同じ視点で再現した比較用"""
     sc = scene_basic(mode); night = mode == 'night'
@@ -294,7 +300,7 @@ def draw_section(path):
     Image, ImageDraw, ImageFont = get_pil()
     f_s, ja = find_font(ImageFont, 15); f_m, _ = find_font(ImageFont, 19); f_l, _ = find_font(ImageFont, 26)
     L = (lambda j, e: j) if ja else (lambda j, e: e)
-    W_, H_ = 1700, 1760
+    W_, H_ = 1700, 2400
     img = Image.new('RGB', (W_, H_), (245, 243, 238)); d = ImageDraw.Draw(img)
     d.text((24, 14), L('道路の断面キット: 車道の中心から1階の壁まで(切り口。マットなベタ塗り・寸法はm)', 'street_kit cross-section: road centre to ground-floor wall (m)'), fill=(20, 20, 20), font=f_l)
     # ---- 全体
@@ -316,7 +322,7 @@ def draw_section(path):
     fy0, fy1 = I['found_front'], I['wall_plane']
     d.rectangle([P_(fy0, I['found_top'])[0], P_(fy0, I['found_top'])[1], P_(fy1 + 0.02, I['gl'])[0], P_(fy1, I['gl'])[1]], fill=ROLE_COL[I['found_role']])
     for (y0, z0, y1, z1, role) in seg:
-        d.line([P_(y0, z0), P_(y1, z1)], fill=ROLE_COL.get(role, (120, 120, 120)), width=3)
+        d.line([P_(y0, z0), P_(y1, z1)], fill=ROLE_COL.get(role, (120, 120, 120)), width=1 if role == 'leaf' else 3)
     # 寸法(全体)
     def hd(y0, y1, z, text, dz=0, col=(30, 30, 160)):
         a, b = P_(y0, z), P_(y1, z)
@@ -333,15 +339,15 @@ def draw_section(path):
              ('wainscot', 'stone', 0.0, 'B: 化粧の腰(石) GL+0.70(推0.45〜0.9)', 'B: stone wainscot GL+0.70'),
              ('flush', 'conc', 1.5, 'C: 歩道と同じ高さ 段差2cm・セットバック1.5m', 'C: flush, 2cm step, setback 1.5m')]
     kinds = ['glass', 'tile', 'entrance']
-    zs = 330.0; top = 720
+    zs = 330.0; top = 720; PH = 560
     for n, (fd, fm, sbk, ja_t, en_t) in enumerate(types):
         md, I, fmd, FI = section_data(fd, fm, sbk, kinds[n])
         seg = slice_md(md, 15.0)
         y_lo = I['curb_o'] - 0.35; y_hi = I['wall_plane'] + 1.25; scz = min(1500.0 / (y_hi - y_lo), 200.0)
-        ox2 = 60; oz2 = top + n * 340 + 280
-        Q_ = lambda y, z: (ox2 + (y - y_lo) * scz, oz2 - z * scz)
-        d.rectangle([ox2 - 30, top + n * 340 - 8, ox2 + 1560, top + n * 340 + 330], outline=(180, 180, 180))
-        d.text((ox2 - 20, top + n * 340 - 4), L(ja_t, en_t) + L('   + 1階 %s' % kinds[n], '   + ground floor %s' % kinds[n]), fill=(20, 20, 20), font=f_m)
+        ox2 = 60; oz2 = top + n * PH + 520; scx = scz; scz = scz * 2.5
+        Q_ = lambda y, z: (ox2 + (y - y_lo) * scx, oz2 - z * scz)
+        d.rectangle([ox2 - 30, top + n * PH - 8, ox2 + 1580, top + n * PH + PH - 20], outline=(180, 180, 180))
+        d.text((ox2 - 20, top + n * PH - 4), L(ja_t, en_t) + L('   + 1階 %s   (縦だけ2.5倍に拡大)' % kinds[n], '   + ground floor %s   (vertical x2.5)' % kinds[n]), fill=(20, 20, 20), font=f_m)
         d.line([Q_(y_lo, 0), Q_(y_hi, 0)], fill=(215, 215, 215), width=1)
         for (y0, z0, y1, z1, role) in seg:
             if role in FILL_ROLES and abs(y1 - y0) > 1e-4 and abs(z1 - z0) < 0.6 * abs(y1 - y0):
@@ -351,7 +357,7 @@ def draw_section(path):
             d.rectangle([Q_(fy0, I['found_top'])[0], Q_(fy0, I['found_top'])[1], Q_(fy1, I['gl'])[0], Q_(fy1, I['gl'])[1]], fill=ROLE_COL[I['found_role']])
         seg += slice_md(fmd, -6.0 + FI['dims'].get('mull_pitch', 1.5) * 0.5 if kinds[n] == 'glass' else (-4.0 if kinds[n] == 'tile' else 0.0), dy=I['wall_plane'] + BD / 2)
         for (y0, z0, y1, z1, role) in seg:
-            if Q_(y1, z1)[0] < ox2 - 5 or Q_(y0, z0)[0] > ox2 + 1560 or max(z0, z1) > 1.15 and role not in ('fence_dark', 'fence_galv'):
+            if Q_(y1, z1)[0] < ox2 - 5 or Q_(y0, z0)[0] > ox2 + 1560 or max(z0, z1) > 0.98 and role not in ('fence_dark', 'fence_galv'):
                 continue
             d.line([Q_(y0, z0), Q_(y1, z1)], fill=ROLE_COL.get(role, (120, 120, 120)), width=3)
         def vd(y, z0, z1, text, dx=0, col=(160, 30, 30)):
@@ -365,17 +371,18 @@ def draw_section(path):
         vd(I['curb_o'] + 0.09, 0, I['curb_h'], L('縁石 0.15(歩道面から0.10)', 'curb 0.15 (0.10 above walk)'), dx=-60 - 40)
         vd(I['sidewalk_o0'] + 0.35, 0, I['sw_h'], L('歩道面 +0.05', 'walk +0.05'), dx=30)
         hd2(I['curb_o'], I['sidewalk_o0'], 1.0, L('縁石厚 0.18', 'curb 0.18'), up=24)
-        hd2(I['tactile'][0], I['tactile'][1], 0.55, L('点字 0.30', 'tactile 0.30'), up=22, col=(150, 110, 0))
-        hd2(I['sidewalk_o0'], I['tactile'][0], 0.36, L('縁石から0.6m', '0.6m from curb'), up=22, col=(150, 110, 0))
-        hd2(I['pit'][0], I['pit'][1], 0.36, L('植樹桝 0.9', 'tree pit 0.9'), up=22, col=(40, 120, 40))
-        hd2(I['boundary_o'], I['boundary_o'] + 0.12, 0.36, L('境界 0.12', 'boundary'), up=22)
+        hd2(I['tactile'][0], I['tactile'][1], 0.62, L('点字 0.30', 'tactile 0.30'), up=22, col=(150, 110, 0))
+        hd2(I['sidewalk_o0'], I['tactile'][0], 0.42, L('縁石から0.6m', '0.6m from curb'), up=22, col=(150, 110, 0))
+        hd2(I['pit'][0], I['pit'][1], 0.42, L('植樹桝 0.9', 'tree pit 0.9'), up=22, col=(40, 120, 40))
+        hd2(I['boundary_o'], I['boundary_o'] + 0.12, 0.62, L('境界 0.12', 'boundary'), up=22)
+        vd(I['sidewalk_o0'] + 0.12 - 0.05, I['sw_h'], I['sw_h'] + 0.9, L('柵(ガードパイプ) 上端0.9', 'guard pipe top 0.9'), dx=-70)
         if fd != 'flush':
             vd(I['found_front'] - 0.1, I['gl'], I['found_top'], L('基礎 +%.2f' % (I['found_top'] - I['gl']), 'found +%.2f' % (I['found_top'] - I['gl'])), dx=-110)
-            hd2(I['wall_plane'] - 0.45 - I['found_prot'], I['wall_plane'] - I['found_prot'], I['gl'] - 0.02, L('犬走り 0.45', 'apron 0.45'), up=-8)
+            hd2(I['wall_plane'] - 0.45 - I['found_prot'], I['wall_plane'] - I['found_prot'], I['gl'] - 0.06, L('犬走り 0.45', 'apron 0.45'), up=-8)
         else:
             vd(I['found_front'] - 0.05, I['gl'], I['found_top'], L('段差 0.02', 'step 0.02'), dx=-90)
-            hd2(I['boundary_o'] + 0.12, I['wall_plane'], 0.36, L('セットバック 1.5', 'setback 1.5'), up=22)
-        d.text((Q_(I['wall_plane'] + 0.15, 0.95)[0], Q_(0, 0.95)[1]), L('壁面 ' + ('GL+%.2f' % (I['base_z'] - I['gl'])), 'wall base'), fill=(80, 80, 80), font=f_s)
+            hd2(I['boundary_o'] + 0.12, I['wall_plane'], 0.62, L('セットバック 1.5', 'setback 1.5'), up=22)
+        d.text((Q_(I['wall_plane'] + 0.15, 0.55)[0], Q_(0, 0.55)[1]), L('壁面 ' + ('GL+%.2f' % (I['base_z'] - I['gl'])), 'wall base'), fill=(80, 80, 80), font=f_s)
         # 柵(0.9m)の凡例
     img.save(path)
     log('section saved', path, img.size, 'ja' if ja else 'en')
@@ -419,11 +426,11 @@ def samples_part():
         sc2 = scene_basic('day', (800, 600))
         st, row = make_sample(name, kw, spec, False, 0.0, 'near')
         I = sk.street_info(st)
-        set_cam(sc2, (4.0, I['sidewalk_o0'] + 1.0, 1.7), (15.0, I['wall_plane'], 1.5), 22)
+        set_cam(sc2, (6.5, I['sidewalk_o0'] + 2.5, 1.7), (16.0, I['wall_plane'], 1.9), 20)
         render(sc2, 'sample_%s' % name)
         sc3 = scene_basic('night', (800, 600))
         st, row = make_sample(name, kw, spec, True, 0.0, 'near')
-        set_cam(sc3, (4.0, I['sidewalk_o0'] + 1.0, 1.7), (15.0, I['wall_plane'], 1.5), 22)
+        set_cam(sc3, (6.5, I['sidewalk_o0'] + 2.5, 1.7), (16.0, I['wall_plane'], 1.9), 20)
         render(sc3, 'sample_night_%s' % name)
     # glb(材質を単純化)。 .blend 保存のあと、別シーンで1つずつ
     for i, (name, kw, spec) in enumerate(SAMPLE_DEFS):
@@ -448,7 +455,8 @@ def main():
     if PART in ('all', 'views'):
         steps += [('02', lambda: shot_eye('02_eye_dusk', 'day')), ('03', lambda: shot_eye('03_eye_night', 'night')),
                   ('04', lambda: shot_aerial('04_aerial_dusk', 'day')), ('05', lambda: shot_aerial('05_aerial_night', 'night')),
-                  ('08', lambda: shot_eye2('08_eye2_night', 'night'))]
+                  ('08', lambda: shot_eye2('08_eye2_night', 'night')),
+                  ('09', lambda: shot_aerial2('09_aerial_oblique_dusk', 'day')), ('10', lambda: shot_aerial2('10_aerial_oblique_night', 'night'))]
     if PART in ('all', 'before'):
         steps += [('06', lambda: shot_before('06_before_dusk', 'day')), ('07', lambda: shot_before('07_before_night', 'night'))]
     for key, fn in steps:
