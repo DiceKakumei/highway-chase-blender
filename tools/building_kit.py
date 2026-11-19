@@ -145,7 +145,7 @@ def wbox(md, x0, x1, y0, y1, z0, z1, role, skip=(), win=(0, 0, 0, 0)):
 def lit_rate(kind, hour, night=True):
     """時刻から点灯率。調査(推): オフィス 19〜21時=40〜60%、23時以降=10〜25%。マンション 19〜22時=30〜50%、深夜10〜20%。"""
     if not night:
-        return 0.04
+        return 0.0
     h = hour % 24.0
     if kind == 'mansion':
         pts = [(0, 0.12), (5, 0.10), (6, 0.2), (17, 0.3), (19, 0.42), (22, 0.40), (23, 0.22), (24, 0.15)]
@@ -163,6 +163,10 @@ def make_lit(kind, ncell, floors, seed, hour, night):
     rng = random.Random(int(seed) * 1013 + 7)
     r = lit_rate(kind, hour, night)
     arr = np.zeros((floors, ncell, 4), np.float32)
+    if not night:                                   # 昼・夕方(night=False): 室内は見せない(窓はガラスの反射だけ)
+        for c in range(ncell):
+            arr[0, c, 3] = 1.0 if (kind == 'zakkyo' and rng.random() < 0.18) else 0.0
+        return arr
     # 1階(ロビー・店舗): 夜はよく点く
     for c in range(ncell):
         if kind == 'office':
@@ -249,10 +253,11 @@ def wall_around(ctx, fr, a0, a1, z0, z1, wa0, wa1, wz0, wz1, d, role):
 def reveal(ctx, fr, a0, a1, z0, z1, rec, role='wall'):
     """窓の奥まり(抱き)。壁面(d=0)からガラス面(d=-rec)までの4面"""
     md = ctx.md
-    fquad(md, fr, [(a0, z0, -rec), (a0, z0, 0.0), (a0, z1, 0.0), (a0, z1, -rec)], role, uvs=[(-rec, z0), (0, z0), (0, z1), (-rec, z1)])      # 左(+a向き)
-    fquad(md, fr, [(a1, z0, 0.0), (a1, z0, -rec), (a1, z1, -rec), (a1, z1, 0.0)], role, uvs=[(0, z0), (-rec, z0), (-rec, z1), (0, z1)])      # 右(-a向き)
-    fquad(md, fr, [(a0, z0, 0.0), (a1, z0, 0.0), (a1, z0, -rec), (a0, z0, -rec)], role, uvs=[(a0 + fr.uo, 0), (a1 + fr.uo, 0), (a1 + fr.uo, rec), (a0 + fr.uo, rec)])   # 下(窓台、+z向き)
-    fquad(md, fr, [(a0, z1, -rec), (a1, z1, -rec), (a1, z1, 0.0), (a0, z1, 0.0)], role, uvs=[(a0 + fr.uo, 0), (a1 + fr.uo, 0), (a1 + fr.uo, rec), (a0 + fr.uo, rec)])   # 上(-z向き)
+    uo = fr.uo
+    fquad(md, fr, [(a0, z0, -rec), (a0, z1, -rec), (a0, z1, 0.0), (a0, z0, 0.0)], role, uvs=[(-rec, z0), (-rec, z1), (0, z1), (0, z0)])                    # 左(+a向き)
+    fquad(md, fr, [(a1, z0, 0.0), (a1, z1, 0.0), (a1, z1, -rec), (a1, z0, -rec)], role, uvs=[(0, z0), (0, z1), (-rec, z1), (-rec, z0)])                    # 右(-a向き)
+    fquad(md, fr, [(a0, z0, -rec), (a0, z0, 0.0), (a1, z0, 0.0), (a1, z0, -rec)], role, uvs=[(a0 + uo, rec), (a0 + uo, 0), (a1 + uo, 0), (a1 + uo, rec)])      # 下(窓台、+z向き)
+    fquad(md, fr, [(a0, z1, 0.0), (a0, z1, -rec), (a1, z1, -rec), (a1, z1, 0.0)], role, uvs=[(a0 + uo, 0), (a0 + uo, rec), (a1 + uo, rec), (a1 + uo, 0)])      # 上(-z向き)
 
 
 def glass_pane(ctx, fr, a0, a1, z0, z1, dg, li, plain=False):
@@ -335,7 +340,8 @@ def roof_items(ctx):
         wbox(md, p[0] - pw / 2 - 0.1, p[0] + pw / 2 + 0.1, p[1] - pd / 2 - 0.1, p[1] + pd / 2 + 0.1, top + ph, top + ph + 0.12, 'roof', skip=('z-',))
         if det != 'far':
             wbox(md, p[0] - 0.5, p[0] + 0.5, p[1] - pd / 2 - 0.02, p[1] - pd / 2, top, top + 2.0, 'door', skip=('d-', 'a-', 'a+', 'z-', 'z+'))
-            wbox(md, p[0] + pw / 2 - 2.4, p[0] + pw / 2 - 0.6, p[1] - pd / 2 - 0.02, p[1] - pd / 2, top + ph - 1.2, top + ph - 0.4, 'dark', skip=('d-', 'a-', 'a+', 'z-', 'z+'))
+            if pw / 2 - 0.3 - 0.75 > 0.5:                                           # ガラリ(換気口)。扉と重ならない位置
+                wbox(md, p[0] + 0.75, p[0] + pw / 2 - 0.3, p[1] - pd / 2 - 0.02, p[1] - pd / 2, top + ph - 1.2, top + ph - 0.4, 'dark', skip=('d-', 'a-', 'a+', 'z-', 'z+'))
         pent_top = (p[0], p[1], top + ph + 0.12)
         info['items'].append('pent')
     # キュービクル(受変電)
@@ -450,7 +456,7 @@ def fac_office(ctx, fr, fi):
                 for i in range(n + 1):
                     a = i * P
                     fbox(md, fr, a - MW / 2, a + MW / 2, gz0, gz1, -MDp, 0.0, 'sash', skip=('d-', 'z-', 'z+'))
-                fbox(md, fr, 0.0, fr.L, gz1 - 0.035, gz1 + 0.035, -0.16, 0.0, 'sash', skip=('d-',))
+                fbox(md, fr, 0.0, fr.L, gz1 - 0.035, gz1 + 0.035, -0.16, -0.01, 'sash', skip=('d-',))
             if fi == 0:                                                                            # 玄関の庇(ひさし)
                 cw = min(6.6, fr.L * 0.5)
                 fbox(md, fr, fr.L / 2 - cw / 2, fr.L / 2 + cw / 2, 4.0, 4.2, 0.0, 2.8, 'canopy', skip=('d-',))
@@ -466,8 +472,8 @@ def fac_office(ctx, fr, fi):
             if li[0] > 0:
                 room_for(ctx, fr, a0, a1, z0, zs1, zs0, zs1, -REC, li, 'office', room_depth(ctx, fi, f, c, 3.6, 6.5), None)
             if near:                                                                                 # 横桟(トランサム)
-                fbox(md, fr, a0, a1, zs0 - 0.035, zs0 + 0.035, -0.16, 0.0, 'sash', skip=('d-',))
-                fbox(md, fr, a0, a1, zs1 - 0.035, zs1 + 0.035, -0.16, 0.0, 'sash', skip=('d-',))
+                fbox(md, fr, a0, a1, zs0 - 0.035, zs0 + 0.035, -0.16, -0.01, 'sash', skip=('d-',))
+                fbox(md, fr, a0, a1, zs1 - 0.035, zs1 + 0.035, -0.16, -0.01, 'sash', skip=('d-',))
         if near:                                                                                      # 縦桟(マリオン)
             for i in range(n + 1):
                 a = i * P
@@ -494,7 +500,7 @@ def fac_zakkyo(ctx, fr, fi):
         for i in range(n + 1):
             a = i * P
             lo, hi = (-PO, PW) if i == 0 else ((fr.L - PW, fr.L) if i == n else (a - PW / 2, a + PW / 2))
-            fbox(md, fr, lo, hi, z0, z0 + h, 0.0, PO, 'pillar', skip=('d-', 'z-', 'z+'))
+            fbox(md, fr, lo, hi, z0, z0 + h - BH, 0.0, PO, 'pillar', skip=('d-', 'z-', 'z+'))      # 梁型の帯と重ならないよう、柱は梁の下まで(同一平面の重なりは黒く抜ける)
         # 梁型(各階の上端、外に出る帯)
         fbox(md, fr, -PO, fr.L, z0 + h - BH, z0 + h, 0.0, BO, 'beam', skip=('d-',))
         for i in range(n):
@@ -539,7 +545,7 @@ def fac_zakkyo(ctx, fr, fi):
                 room_for(ctx, fr, wa0, wa1, z0, z0 + 2.7, wz0, wz1, -REC, li, 'office', room_depth(ctx, fi, f, c, 3.0, 5.5), None)
             if near:
                 sash_frame(ctx, fr, wa0, wa1, wz0, wz1, -REC, S['SASH_W'], S['SASH_D'], 1 if front else 0)
-                fbox(md, fr, wa0 - 0.05, wa1 + 0.05, wz0 - 0.06, wz0, -REC, 0.07, 'beam', skip=('d-',))        # 窓台(雨だれの起点)
+                fbox(md, fr, wa0 - 0.05, wa1 + 0.05, wz0 - 0.06, wz0, 0.0, 0.07, 'beam', skip=('d-',))        # 窓台(壁面より前に出る部分。雨だれの起点。開口の底面とは重ねない)
                 if front and hr(ctx, f, c, 3) < 0.25:                                                       # 室外機
                     cx = (wa0 + wa1) / 2 + (hr(ctx, f, c, 4) - 0.5) * 1.0
                     fbox(md, fr, cx - 0.4, cx + 0.4, z0 + 0.12, z0 + 0.78, 0.0, 0.36, 'ac', skip=('d-',))
@@ -552,7 +558,7 @@ def escape_stair(ctx, fr):
     if ctx.detail == 'far' or fr.L < 7.8:
         return
     md = ctx.md; S = ctx.S; Hf = S['Hf']; G = S['G']
-    sc = fr.L * 0.5; a0 = sc - 2.6; a1 = sc + 2.6; W_ = 1.0
+    sc = fr.L * 0.5; a0 = sc - 2.6; a1 = sc + 2.6; W_ = 1.0; BO_ = S['BEAM_OUT']          # 梁型の出より外側から踊り場を張る
     ztop = ctx.zf(ctx.floors - 1)
     zs = [0.0, G / 2]
     z = G
@@ -567,9 +573,9 @@ def escape_stair(ctx, fr):
     for k, (ak, zk) in enumerate(pts):
         if k > 0:                                                                                      # 踊り場
             if k % 2 == 0:
-                fbox(md, fr, a0, a0 + 1.2, zk - 0.08, zk, 0.0, W_ + 0.1, 'stair', skip=('d-',))
+                fbox(md, fr, a0, a0 + 1.2, zk - 0.08, zk, BO_, W_ + 0.1, 'stair', skip=('d-',))
             else:
-                fbox(md, fr, a1 - 1.2, a1, zk - 0.08, zk, 0.0, W_ + 0.1, 'stair', skip=('d-',))
+                fbox(md, fr, a1 - 1.2, a1, zk - 0.08, zk, BO_, W_ + 0.1, 'stair', skip=('d-',))
     for k in range(len(pts) - 1):
         (aA, zA), (aB, zB) = pts[k], pts[k + 1]
         fquad(md, fr, [(aA, zA, 0.1), (aB, zB, 0.1), (aB, zB, W_), (aA, zA, W_)], 'stair', uvs=[(0, 0), (1, 0), (1, 1), (0, 1)])
@@ -866,7 +872,7 @@ def dirt_socket(nb, u, v, C, streak=True):
         ls = nb.m('ADD', 1.4, nb.m('MULTIPLY', hv2, 1.8))                         # 筋の長さ 1.4〜3.2m(推1〜3m)
         decay = nb.sstep(dsill, ls, 0.0)
         tex = nb.m('ADD', 0.35, nb.m('MULTIPLY', nz(6.0, 0.22, 4.0), 1.1), clamp=True)
-        terms.append(nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', line, decay), on), tex))
+        terms.append(nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', nb.m('MULTIPLY', line, decay), on), tex), 1.8))
     broad = nb.m('MULTIPLY', nb.sstep(nz(1.3, 0.10, 3.0), 0.45, 0.80), 0.35)         # 大きな縦のムラ
     terms.append(broad)
     top = nb.m('MULTIPLY', nb.sstep(nb.m('SUBTRACT', C['H'], v), 2.4, 0.0), nb.m('ADD', 0.45, nb.m('MULTIPLY', nz(2.0, 0.6), 0.9)))
@@ -891,7 +897,7 @@ def mat_wall(C, name, base, tile=False, streak=True, dirt_k=1.0, rough=0.88):
     b = principled(nt)
     u, v = nb.uv()
     far = C['detail'] == 'far'
-    dirt = nb.m('MULTIPLY', dirt_socket(nb, u, v, C, streak), dirt_k * (0.45 if tile else 1.0))       # タイルは汚れにくい★
+    dirt = nb.m('MULTIPLY', dirt_socket(nb, u, v, C, streak), dirt_k * (0.6 if tile else 1.0))       # タイルは汚れにくい★
     A = C['A']
     sd = C['seed'] * 1.713 + 0.37
     if tile and not far:
@@ -916,7 +922,7 @@ def mat_wall(C, name, base, tile=False, streak=True, dirt_k=1.0, rough=0.88):
             nt.links.new(nb.noise(nb.vec(nb.m('MULTIPLY', u, 14.0), nb.m('MULTIPLY', v, 14.0), sd), 1.0, 4.0), bump.inputs['Height'])
             nt.links.new(bump.outputs['Normal'], b.inputs['Normal'])
     # 汚れ: 築年数による全体の明度低下(20〜40%) + 汚れの場所の暗さ(最大20〜40%)
-    dark = nb.m('MINIMUM', nb.m('ADD', A * 0.5, nb.m('MULTIPLY', dirt, A * 1.0)), 0.75)
+    dark = nb.m('MINIMUM', nb.m('ADD', A * 0.35, nb.m('MULTIPLY', dirt, A * 0.65)), 0.75)        # 汚れの最も濃い所で A(築年数に応じた20〜60%)だけ暗い
     tint = nb.vmix(nb.rgb((1, 1, 1)), nb.rgb((0.9, 0.86, 0.8)), nb.m('MULTIPLY', dirt, 0.7))
     final = nb.vop('MULTIPLY', nb.vscale(colr, nb.m('SUBTRACT', 1.0, dark)), tint)
     nt.links.new(final, b.inputs['Base Color'])
@@ -926,7 +932,7 @@ def mat_wall(C, name, base, tile=False, streak=True, dirt_k=1.0, rough=0.88):
             b.inputs[k].default_value = vv
         except Exception:
             pass
-    avg = tuple(min(1.0, c * (1 - A * 0.8)) for c in base)
+    avg = tuple(min(1.0, c * (1 - A * 0.55)) for c in base)
     return finish(mat, nt, out, b.outputs['BSDF'], dict(c=list(avg), r=0.5 if tile else 0.88, m=0.0))
 
 
@@ -1092,7 +1098,7 @@ def mat_far(C, name, litimg):
         slab = nb.m('GREATER_THAN', vf, Hf - S['SLAB'])
         rail = nb.m('LESS_THAN', vf, S['RAIL_H'])
         wcol = nb.vmix(nb.vmix(nb.rgb(C['wall_base']), nb.rgb(C['rail_base']), nb.m('MULTIPLY', rail, up)), nb.rgb(C['slab_base']), nb.m('MULTIPLY', slab, up))
-    dark = nb.m('MINIMUM', nb.m('ADD', A * 0.5, nb.m('MULTIPLY', dirt, A)), 0.75)
+    dark = nb.m('MINIMUM', nb.m('ADD', A * 0.35, nb.m('MULTIPLY', dirt, A * 0.65)), 0.75)
     wall = principled(nt, **{'Roughness': 0.8})
     nt.links.new(nb.vscale(wcol, nb.m('SUBTRACT', 1.0, dark)), wall.inputs['Base Color'])
     # 窓側
@@ -1175,7 +1181,7 @@ def build_material(role, C, name, litimg):
     if role == 'pent':
         return mat_wall(C, name, (0.40, 0.40, 0.38), tile=False, streak=False, dirt_k=0.8)
     if role == 'roof':
-        return mat_plain(C, name, (0.13, 0.13, 0.125), 0.9)
+        return mat_plain(C, name, (0.22, 0.22, 0.21), 0.9)
     if role == 'spandrel':
         return mat_plain(C, name, C['spandrel_col'], 0.08, 0.45)
     if role == 'sash':
@@ -1209,7 +1215,7 @@ def build_material(role, C, name, litimg):
     if role == 'rail_bars':
         return mat_bars(C, name)
     if role == 'lamp_red':
-        return mat_plain(C, name, (0.2, 0.01, 0.01), 0.5, 0.0, emit=(1.0, 0.03, 0.02), emit_strength=80.0)
+        return mat_plain(C, name, (0.2, 0.01, 0.01), 0.5, 0.0, emit=(1.0, 0.03, 0.02), emit_strength=8.0)
     if role == 'lamp_corr':
         return mat_lamp_corr(C, name)
     if role == 'room_wall':
@@ -1239,7 +1245,7 @@ def _litmap_image(name, lit):
     return img
 
 
-def make_building(kind, width, depth, floors, seed=0, detail='near', night=True, hour=20.0, age=None, name=None, emit=5.0, collection=None):
+def make_building(kind, width, depth, floors, seed=0, detail='near', night=True, hour=20.0, age=None, name=None, emit=1.5, collection=None):
     """ビル1棟を作る。 -> 親Empty(子 = メッシュ)。 kind: 'office' | 'zakkyo' | 'mansion'(日本語名も可)。
     width/depth はモジュールの整数倍に丸める。 hour = 夜の時刻(窓の点灯率)。 age = 0(新築)〜1(築40年超)、省略時は種類と seed から。
     emit = 窓の明るさ(発光の強さ)。 collection = 入れる Collection(省略時は現在のシーン)。"""

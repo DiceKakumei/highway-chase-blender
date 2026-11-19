@@ -13,7 +13,7 @@ import building_kit as bk
 ARGV = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else ['out']
 OUT = ARGV[0]; os.makedirs(OUT, exist_ok=True)
 PRM = json.load(open(ARGV[1])) if len(ARGV) > 1 else {}
-PART = PRM.get('part', 'all'); SAMPLES = int(PRM.get('samples', 32)); RES = PRM.get('res', [960, 640]); EMIT = float(PRM.get('emit', 5.0))
+PART = PRM.get('part', 'all'); SAMPLES = int(PRM.get('samples', 32)); RES = PRM.get('res', [960, 640]); EMIT = float(PRM.get('emit', 1.5))
 ONLY = PRM.get('shots')
 
 
@@ -200,10 +200,10 @@ def shot_roof(name, mode):
 
 
 SHOTS = [
-    ('01_day_office_near', lambda n: shot_single(n, 'day', ('office', 33, 26.4, 16, 3), ((13.0, -13.2 - 9.0, 21.0), (14.0, -13.2, 22.0), 35))),
+    ('01_day_office_near', lambda n: shot_single(n, 'day', ('office', 33, 26.4, 16, 3), ((13.0, -13.2 - 14.0, 9.0), (14.0, -13.2, 20.0), 30))),
     ('02_day_zakkyo_near', lambda n: shot_single(n, 'day', ('zakkyo', 11.7, 15.6, 8, 5), ((5.5, -7.8 - 9.0, 9.5), (1.5, -7.8, 11.5), 35))),
     ('03_day_mansion_near', lambda n: shot_single(n, 'day', ('mansion', 26.4, 13.2, 10, 7), ((9.0, -8.0 - 8.0, 12.0), (7.0, -8.0, 12.5), 35))),
-    ('04_night_office_near', lambda n: shot_single(n, 'night', ('office', 33, 26.4, 16, 3), ((13.0, -13.2 - 9.0, 21.0), (14.0, -13.2, 22.0), 35))),
+    ('04_night_office_near', lambda n: shot_single(n, 'night', ('office', 33, 26.4, 16, 3), ((13.0, -13.2 - 14.0, 9.0), (14.0, -13.2, 20.0), 30))),
     ('05_night_zakkyo_near', lambda n: shot_single(n, 'night', ('zakkyo', 11.7, 15.6, 8, 5), ((5.5, -7.8 - 9.0, 9.5), (1.5, -7.8, 11.5), 35))),
     ('06_night_mansion_near', lambda n: shot_single(n, 'night', ('mansion', 26.4, 13.2, 10, 7), ((9.0, -8.0 - 8.0, 12.0), (7.0, -8.0, 12.5), 35))),
     ('07_day_street', lambda n: shot_street(n, 'day')),
