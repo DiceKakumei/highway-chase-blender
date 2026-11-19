@@ -744,7 +744,29 @@ def build(render_module):
     global R, GZ
     R = render_module
     GZ = R.P['ground_z']
+    if R.P.get('city_kit'):                                   # 新しい街(tools/city_kit)。ジョブのカメラの点の周りだけ near/mid、他は far
+        return build_kit()
     city = json.load(open(os.path.join(R.ROOT, 'assets', 'city.json'), encoding='utf-8'))
     build_buildings(city)
     build_ground(city)
     build_trees(city)
+
+
+def build_kit():
+    """新しい街。 R.P['_cam_pts'] = このジョブのカメラの点 [(x, y, z), ...]。 街の中心と半径はその点から決める"""
+    import sys
+    tools = os.path.join(R.ROOT, 'tools')
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import city_kit as ck
+    pts = R.P.get('_cam_pts') or [(0.0, 700.0, 1.0)]
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    center = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+    radius = max(max(xs) - min(xs), max(ys) - min(ys)) / 2 + R.P['kit_radius']
+    pol = dict(R.P.get('kit_policy') or {})
+    root = ck.build_city(os.path.join(R.ROOT, 'assets', 'city.json'), center, radius, pts, hour=R.P['kit_hour'], seed=1, ground_z=GZ, emit=R.P['kit_emit'],
+                         material_hook=R.add_fog, detail_policy=pol, obs_emit=R.P['obs_emit'], street_emit=R.P['street_emit'], pool_emit=R.P['pool_emit'])
+    st = ck.last_stats
+    print('CITYKIT center %s radius %.0f cams %d  %s' % ([round(c) for c in center], radius, len(pts),
+          {k: st.get(k) for k in ('detail_counts', 'houses', 'tris_total', 't_total', 'materials')}))
+    return root

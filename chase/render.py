@@ -67,6 +67,8 @@ P = {
     'relax_iters': 10,       # 車体メッシュの凹凸をならす回数(0 = ならさない)
     'dbg_idx': None,         # 確認用カメラの対象(S['cars'] の番号。None = 主役のトラック)
     'scene': 'main',         # 'sequel' = 続編(打ち合い)。motion の代わりに sequel を使う。'both' = コマ0〜719が追跡、720〜が続編(コマ-720)
+    'city_kit': 0,           # 1 = 新しい街(tools/city_kit)。ジョブのカメラの点の周りだけ near/mid
+    'kit_hour': 19.0, 'kit_emit': 8.0, 'kit_radius': 1100.0, 'kit_policy': None,
     'dbg_cases': None,       # 続編の確認用: [[τ, カメラxyz, 見る先xyz, fov], ...](Bの位置から。コマの順に使う)
 }
 
@@ -1184,6 +1186,17 @@ def main():
             except Exception as e:
                 print('cycles.%s: %s' % (attr, e))
     build_world(); build_road()
+    if P['city_kit']:                                       # このジョブのカメラの点(位置と、少し先の見る先)。新しい街の near/mid を決める
+        pts = []
+        for f in frames:
+            t_ = getattr(M, 'TOFF', 0.0) + (f - foff) / M.FPS
+            p_, l_, _, _ = M.shot_at(t_, M.shot_index(t_))
+            pb_ = Vector(M.to_blender(p_)); lb_ = Vector(M.to_blender(l_)); d_ = lb_ - pb_; d_.z = 0.0
+            pts.append((pb_.x, pb_.y, pb_.z))
+            if d_.length > 1e-3:
+                q_ = pb_ + d_.normalized() * min(40.0, d_.length)
+                pts.append((q_.x, q_.y, pb_.z))
+        P['_cam_pts'] = pts
     import city
     city.build(sys.modules[__name__])
     S = build_vehicles()
