@@ -24,8 +24,8 @@ FING = {   # 名前: (MCPのz, 太さ, [基節, 中節, 末節])
 }
 KNUCKLE_Y = 0.090
 KNUCKLE_X = 0.002
-THUMB = {'cmc': (-0.004, 0.022, 0.026), 'len': [0.046, 0.033, 0.027], 'r': 0.0118,
-         'dir': [(-0.25, 0.50, 0.83), (-0.22, 0.58, 0.78), (-0.15, 0.68, 0.72)]}
+THUMB = {'cmc': (-0.004, 0.022, 0.026), 'len': [0.040, 0.031, 0.025], 'r': 0.0132,
+         'dir': [(-0.35, 0.62, 0.70), (-0.25, 0.72, 0.65), (-0.15, 0.80, 0.58)]}
 BONES = ['Hand'] + [f + str(i) for f in ('Thumb', 'Index', 'Middle', 'Ring', 'Pinky') for i in (1, 2, 3)]
 
 # ------------------------------------------------------------------ 形づくり
@@ -195,6 +195,29 @@ def set_pose(ao, D):
     bpy.context.view_layer.update()
 
 
+def swing3(a, b):
+    a = np.asarray(a, float) / np.linalg.norm(a); b = np.asarray(b, float) / np.linalg.norm(b)
+    v = np.cross(a, b); c = float(a @ b); sn = np.linalg.norm(v)
+    if sn < 1e-9:
+        return np.eye(3)
+    return rotvec(v / sn * math.atan2(sn, c))
+
+
+def thumb_to_waypoints(ao, wps):
+    """親指の3本のボーンを、銃の座標の通過点 wps=[MCP, IP, 先端] へ向ける -> D(手の座標系=アーマチュア空間の回転)。 ao.matrix_world を先に設定しておく"""
+    M = np.array(ao.matrix_world); Mi = np.linalg.inv(M)
+    cmc = np.array(THUMB['cmc'], float)
+    pts = [cmc] + [(Mi @ np.r_[np.asarray(w, float), 1.0])[:3] for w in wps]
+    D = {}; Qp = np.eye(3); head = cmc.copy()
+    for i in range(3):
+        d0 = np.array(THUMB['dir'][i], float); d0 /= np.linalg.norm(d0)
+        t = pts[i + 1] - head
+        Q = swing3(d0, t)
+        D['Thumb%d' % (i + 1)] = Qp.T @ Q
+        head = head + Q @ d0 * THUMB['len'][i]; Qp = Q
+    return D
+
+
 def curl_pose(curl, thumb):
     """curl = {'Index': (a1,a2,a3)(度), ...}、 thumb = {'Thumb1': rotvec(度), ...}"""
     D = {}
@@ -264,10 +287,16 @@ def pen_report(ob, gun, ao):
     res = {}
     for i, v in enumerate(me.vertices):
         p = M @ v.co
-        loc, nrm, idx, dist = bvh.find_nearest(p)
+        loc, nrm, idx, dist = bvh.find_nearest(p, 0.06)
         if loc is None:
             continue
-        inside = (p - loc).dot(nrm) < 0
+        hits = 0; q = p.copy(); dirn = Vector((1, 0.0013, 0.0007))
+        for _ in range(12):
+            h = bvh.ray_cast(q, dirn)
+            if h[0] is None:
+                break
+            hits += 1; q = h[0] + dirn.normalized() * 1e-5
+        inside = hits % 2 == 1
         g = GROUP[i]
         r = res.setdefault(g, [0, 0.0, 1e9])
         if inside:
@@ -290,11 +319,14 @@ def main():
     # --- 2. 銃を握る
     gun = import_gun()
     P = dict(PRM)
-    pos = P.get('pos', (0.027, -0.078, -0.024)); yaw = P.get('yaw', 0.0); roll = P.get('roll', 0.0)
+    pos = P.get('pos', (0.027, -0.054, -0.020)); yaw = P.get('yaw', 0.0); roll = P.get('roll', 0.0)
     ao.matrix_world = Matrix.Translation(pos) @ Matrix.Rotation(math.radians(yaw), 4, 'Z') @ Matrix.Rotation(math.radians(roll), 4, 'Y')
     curl = P.get('curl', {'Index': (8, 14, 8), 'Middle': (85, 80, 55), 'Ring': (85, 80, 55), 'Pinky': (80, 80, 50)})
     thumb = P.get('thumb', {'Thumb1': (0, 0, 50), 'Thumb2': (0, 0, 30), 'Thumb3': (0, 0, 15)})
-    set_pose(ao, curl_pose({k: tuple(v) for k, v in curl.items()}, {k: tuple(v) for k, v in thumb.items()}))
+    Dg = curl_pose({k: tuple(v) for k, v in curl.items()}, {})
+    wps = P.get('thumb_wp', [(-0.010, -0.054, 0.020), (-0.031, -0.022, 0.030), (-0.031, 0.004, 0.030)])
+    Dg.update(thumb_to_waypoints(ao, wps))
+    set_pose(ao, Dg)
     rep = pen_report(ob, gun, ao)
     for g, r in rep.items():
         print('PEN %-7s inside=%4d maxdepth=%.1fmm mindist=%.1fmm' % (g, r[0], r[1] * 1000, r[2] * 1000))
