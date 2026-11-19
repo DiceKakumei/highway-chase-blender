@@ -55,3 +55,4 @@ jobs:
           tag="h${{ github.run_number }}"
           gh release create "$tag" --title "hand $tag" --notes "script=${{ inputs.script }}" --repo "${{ github.repository }}"
           gh release upload "$tag" png.zip run.log sheet.jpg --clobber --repo "${{ github.repository }}"
+          if ls out/*.json >/dev/null 2>&1; then gh release upload "$tag" out/*.json --clobber --repo "${{ github.repository }}"; fi

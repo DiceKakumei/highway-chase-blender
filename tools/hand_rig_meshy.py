@@ -1,7 +1,9 @@
-"""Meshy製のグローブの手(assets/bike_B2/hand_open.glb、手を開いた静止姿勢)に指ボーンを入れて、銃を握らせる単体テスト。チェイスのシーンとは無関係。
+"""Meshy製のグローブの手(assets/bike_B2/hand_open.glb、手を開いた静止姿勢)に指ボーンを入れて、拳銃を握らせる単体テスト。チェイスのシーンとは無関係。
   blender --background --python tools/hand_rig_meshy.py -- OUT
+計算(握りの探索・仕様)は tools/hand_grip_core.py。 仕様の出典: リサーチ/2026-11-19_拳銃の握り方_現実の挙動.md
 メッシュの座標(glTF): 指 = +Y、親指 = -X 側、手のひら = -Z、手の甲 = +Z。 手首のあたりが y=0、指先が y=0.28 (m)。 原点は中指の軸(x=0.0145)へずらす。
 ボーン: Hand, Thumb1-3, Index1-3, Middle1-3, Ring1-3, Pinky1-3。 屈曲 = X 軸まわりに -θ(+Y が -Z=手のひら側へ倒れる)。
+出力: OUT/hand_grip_poses.json (2状態: ready=構え(発砲前)、fire=発砲中)。 リポジトリの assets/bike_B2/hand_grip_poses.json にコピーして使う。
 """
 import bpy, os, sys, math, json
 import numpy as np
@@ -9,79 +11,13 @@ from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hand_rig_test as H
+import hand_grip_core as C
 
 OUT = H.OUT; ROOT = H.ROOT
-C0 = np.array([0.0145, 0.0, 0.0])
-FINGERS = {   # mcp(付け根の関節), end(先端の中心線の終点), 半径
-    'Index': dict(mcp=(-0.025, 0.172, 0.016), end=(-0.025, 0.258, 0.002), r=0.0125),
-    'Middle': dict(mcp=(0.0145, 0.177, 0.018), end=(0.0145, 0.269, 0.002), r=0.0130),
-    'Ring': dict(mcp=(0.050, 0.172, 0.014), end=(0.050, 0.258, -0.004), r=0.0125),
-    'Pinky': dict(mcp=(0.070, 0.165, 0.010), end=(0.078, 0.229, -0.012), r=0.0110),
-}
-RATIO = (0.43, 0.30, 0.27)
-THUMB_J = [(-0.030, 0.085, 0.000), (-0.052, 0.125, -0.012), (-0.068, 0.160, -0.022), (-0.080, 0.180, -0.027)]
-THUMB_R = 0.016
-HAND_HEAD = (0.0145, 0.03, 0.005); HAND_TAIL = (0.0170, 0.17, 0.012)
-MH = np.array([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 0, 1.0]])      # メッシュ座標 -> 手の座標(手のひら=-X, 親指側=+Z, 指=+Y)。 銃の座標と向きがそろう
+CHAINS = C.CHAINS; BONES = C.BONES; JOINTS = C.JOINTS
 
 
-def sh(p):
-    return np.asarray(p, float) - C0
-
-
-def chain_joints(f):
-    a = sh(f['mcp']); b = sh(f['end']); d = b - a
-    pts = [a]; acc = 0.0
-    for r in RATIO:
-        acc += r; pts.append(a + d * acc)
-    return pts                      # 4点: MCP, PIP, DIP, 先端
-
-
-JOINTS = {n: chain_joints(f) for n, f in FINGERS.items()}
-JOINTS['Thumb'] = [sh(p) for p in THUMB_J]
-CHAINS = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']
-BONES = ['Hand'] + [c + str(i) for c in CHAINS for i in (1, 2, 3)]
-RAD = {n: f['r'] for n, f in FINGERS.items()}; RAD['Thumb'] = THUMB_R
-
-
-def smooth(t):
-    t = min(max(t, 0.0), 1.0); return t * t * (3 - 2 * t)
-
-
-def seg_dist(P, a, b):
-    """点群 P(N,3) と線分 ab の距離と、線分上のパラメータ位置(a からの長さ)"""
-    ab = b - a; L = np.linalg.norm(ab); u = ab / L
-    t = np.clip((P - a) @ u, 0, L)
-    return np.linalg.norm(P - (a + np.outer(t, u)), axis=1), t, L
-
-
-def compute_weights(P):
-    """P = 頂点(ずらし後) -> W (N, 骨数)。 いちばん近い指の中心線に属する頂点は、その指の骨(関節の近くでなめらかにつなぐ)。 ほかは Hand"""
-    N = len(P); W = np.zeros((N, len(BONES))); bi = {b: i for i, b in enumerate(BONES)}
-    best = np.full(N, 1e9); owner = np.full(N, -1); sarr = np.zeros(N)
-    for ci, c in enumerate(CHAINS):
-        J = JOINTS[c]; cum = 0.0; dmin = np.full(N, 1e9); smin = np.zeros(N)
-        for k in range(3):
-            d, t, L = seg_dist(P, J[k], J[k + 1])
-            m = d < dmin; dmin = np.where(m, d, dmin); smin = np.where(m, cum + t, smin); cum += L
-        m = dmin < best; best = np.where(m, dmin, best); owner = np.where(m, ci, owner); sarr = np.where(m, smin, sarr)
-    own_final = np.full(N, -1)
-    for i in range(N):
-        W[i, 0] = 1.0
-        ci = owner[i]; c = CHAINS[ci]; R = RAD[c] + (0.013 if c != 'Thumb' else 0.018)
-        s = sarr[i]
-        if best[i] > R or s < -0.012:
-            continue
-        own_final[i] = ci
-        J = JOINTS[c]; l1 = np.linalg.norm(J[1] - J[0]); l2 = np.linalg.norm(J[2] - J[1])
-        bw = 0.020 if c == 'Thumb' else 0.008
-        t0 = smooth((s - 0.0) / (2 * bw) + 0.5); t1 = smooth((s - l1) / (2 * bw) + 0.5); t2 = smooth((s - l1 - l2) / (2 * bw) + 0.5)
-        W[i, 0] = 1 - t0
-        W[i, bi[c + '1']] = t0 * (1 - t1); W[i, bi[c + '2']] = t1 * (1 - t2); W[i, bi[c + '3']] = t2
-    return W, own_final, best
-
-
-def build():
+def build(wvar='w0'):
     before = set(bpy.data.objects)
     bpy.ops.import_scene.gltf(filepath=os.path.join(ROOT, 'assets/bike_B2/hand_open.glb'), import_shading='SMOOTH')
     new = [o for o in bpy.data.objects if o not in before]; bpy.context.view_layer.update()
@@ -92,20 +28,15 @@ def build():
             bpy.data.objects.remove(x)
     me = ob.data
     # Blender(Z上) -> glTF(Y上) に戻し、 C0 だけずらす。 法線ごと変換するため、行列で変換する
-    Mfix = Matrix(((1, 0, 0, -C0[0]), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1)))
+    Mfix = Matrix(((1, 0, 0, -C.C0[0]), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1)))
     me.transform(Mfix); me.update()
     P = np.empty(len(me.vertices) * 3, np.float32); me.vertices.foreach_get('co', P); P = P.reshape(-1, 3).astype(float)
     print('hand mesh verts', len(P), 'bbox', P.min(0), P.max(0))
-    W, owner, best = compute_weights(P)
-    for b in BONES:
-        ob.vertex_groups.new(name=b)
-    for bi, b in enumerate(BONES):
-        vg = ob.vertex_groups[b]
-        for i in np.nonzero(W[:, bi] > 1e-3)[0]:
-            vg.add([int(i)], float(W[i, bi]), 'REPLACE')
+    W, owner, best = C.compute_weights(P, C.WEIGHT_VARIANTS[wvar])
+    set_weights(ob, W)
     arm = bpy.data.armatures.new('handArm'); ao = bpy.data.objects.new('handArm', arm); bpy.context.scene.collection.objects.link(ao)
     bpy.context.view_layer.objects.active = ao; bpy.ops.object.mode_set(mode='EDIT'); eb = arm.edit_bones
-    h = eb.new('Hand'); h.head = tuple(sh(HAND_HEAD)); h.tail = tuple(sh(HAND_TAIL)); h.align_roll((0, 0, 1))
+    h = eb.new('Hand'); h.head = tuple(C.sh(C.HAND_HEAD)); h.tail = tuple(C.sh(C.HAND_TAIL)); h.align_roll((0, 0, 1))
     for c in CHAINS:
         par = h; J = JOINTS[c]
         for i in range(3):
@@ -118,120 +49,30 @@ def build():
     return ao, ob, P, W, owner
 
 
-def Rx(a):
-    return H.rotvec((a, 0, 0))
+def set_weights(ob, W):
+    for g in list(ob.vertex_groups):
+        ob.vertex_groups.remove(g)
+    for bi, b in enumerate(BONES):
+        vg = ob.vertex_groups.new(name=b)
+        for i in np.nonzero(W[:, bi] > 1e-3)[0]:
+            vg.add([int(i)], float(W[i, bi]), 'REPLACE')
 
 
-def flex_D(curl):
-    D = {}
-    for c in ('Index', 'Middle', 'Ring', 'Pinky'):
-        for i, a in enumerate(curl.get(c, (0, 0, 0))):
-            D[c + str(i + 1)] = Rx(-math.radians(a))
-    return D
+def blender_sdf(gun):
+    dg = bpy.context.evaluated_depsgraph_get(); bvh = BVHTree.FromObject(gun, dg)
+
+    def dist(pts):
+        out = np.empty(len(pts))
+        for i in range(len(pts)):
+            p = Vector(pts[i]); loc, nrm, idx, d = bvh.find_nearest(p, 0.04)
+            out[i] = 0.04 if loc is None else (d if (p - loc).dot(nrm) >= 0 else -d)
+        return out
+    return C.SDF.build(C.SDF_ORG, C.SDF_STEP, C.SDF_SHAPE, dist), bvh
 
 
-def finger_points(c, ang, M):
-    J = JOINTS[c]; p = J[0].copy(); cum = 0.0; out = []
-    for k in range(3):
-        d0 = J[k + 1] - J[k]; L = np.linalg.norm(d0); d0 = d0 / L
-        cum += math.radians(ang[k]); d = Rx(-cum) @ d0
-        for q in (0.25, 0.5, 0.75, 1.0):
-            out.append(((M @ np.r_[p + d * L * q, 1.0])[:3], RAD[c], k))
-        p = p + d * L
-    return out
-
-
-def gap(bvh, pt):
-    return H.gap(bvh, pt)
-
-
-def fit_fingers(bvh, M, a0):
-    best = {}; total = 0.0
-    for c in ('Middle', 'Ring', 'Pinky'):
-        bs = None
-        for a1 in range(10, 100, 10):
-            for a2 in range(20, 120, 10):
-                for a3 in range(0, 90, 10):
-                    pts = finger_points(c, (a1, a2, a3), M)
-                    sc = 0.0; segmin = [0.05, 0.05, 0.05]
-                    for (pt, r, k) in pts:
-                        g = gap(bvh, pt) - r
-                        if g < -0.001:
-                            sc += 4 * (-g - 0.001) * 1000
-                        segmin[k] = min(segmin[k], max(g, 0))
-                    sc += sum(segmin) * 300
-                    tip = pts[-1][0]
-                    if tip[0] > -0.004:
-                        sc += 0.8 + (tip[0] + 0.004) * 20
-                    sc += 0.0006 * (abs(a1 - a0[c][0]) + abs(a2 - a0[c][1]) + abs(a3 - a0[c][2]))
-                    if bs is None or sc < bs[0]:
-                        bs = (sc, (a1, a2, a3))
-        best[c] = bs[1]; total += bs[0]
-    return best, total
-
-
-def thumb_D(M, wps):
-    Mi = np.linalg.inv(M); J = JOINTS['Thumb']
-    pts = [(Mi @ np.r_[np.asarray(w, float), 1.0])[:3] for w in wps]
-    D = {}; Qp = np.eye(3); head = J[0].copy()
-    for i in range(3):
-        d0 = J[i + 1] - J[i]; L = np.linalg.norm(d0); d0 = d0 / L
-        Q = H.swing3(d0, pts[i] - head)
-        D['Thumb%d' % (i + 1)] = Qp.T @ Q; head = head + Q @ d0 * L; Qp = Q
-    return D
-
-
-def fit_thumb(bvh, M, target, rng, mid=np.array([-0.02, -0.035, 0.012])):
-    J = JOINTS['Thumb']; L = [np.linalg.norm(J[i + 1] - J[i]) for i in range(3)]
-    cmc = (M @ np.r_[J[0], 1.0])[:3]; rest_d = [(M[:3, :3] @ (J[i + 1] - J[i])) / L[i] for i in range(3)]
-
-    def pts_of(dirs):
-        p = cmc.copy(); P = [p]; samples = []
-        for i in range(3):
-            q = p + dirs[i] * L[i]
-            for t in (0.25, 0.5, 0.75, 1.0):
-                samples.append(p + (q - p) * t)
-            p = q; P.append(p)
-        return P, samples
-
-    def score(dirs):
-        P, S = pts_of(dirs); sc = 0.0
-        for s_ in S:
-            g = gap(bvh, s_) - THUMB_R
-            if g < -0.0005:
-                sc += (-g - 0.0005) * 4000
-        sc += np.linalg.norm(P[3] - target) * 250 + np.linalg.norm(P[2] - mid) * 60
-        for i in range(2):
-            ang = math.acos(max(-1, min(1, float(dirs[i] @ dirs[i + 1]))))
-            sc += max(0.0, ang - 1.0) * 5
-        for i in range(3):
-            ang = math.acos(max(-1, min(1, float(dirs[i] @ rest_d[i]))))
-            sc += max(0.0, ang - 1.7) * 5 + ang * 0.05
-        return sc
-
-    def rnd_dir(base, spread):
-        v = base + rng.normal(0, spread, 3); return v / np.linalg.norm(v)
-
-    best = None
-    for it in range(16000):
-        dirs = [rnd_dir(rest_d[i], 0.9) for i in range(3)]
-        sc = score(dirs)
-        if best is None or sc < best[0]:
-            best = (sc, dirs)
-    sc, dirs = best
-    for it in range(4000):
-        k = it % 3; nd = list(dirs); nd[k] = rnd_dir(dirs[k], 0.12)
-        s2 = score(nd)
-        if s2 < sc:
-            sc, dirs = s2, nd
-    P, S = pts_of(dirs)
-    print('thumb fit score %.3f tip %s target %s' % (sc, np.round(P[3], 3), np.round(target, 3)))
-    return P[1:], sc
-
-
-def inside_report(ob, owner, gun):
+def inside_report(ob, owner, bvh):
     dg = bpy.context.evaluated_depsgraph_get(); ev = ob.evaluated_get(dg); me = ev.to_mesh(); M = ob.matrix_world
-    bvh = BVHTree.FromObject(gun, dg); res = {}
+    res = {}
     for i, v in enumerate(me.vertices):
         p = M @ v.co
         loc, nrm, idx, dist = bvh.find_nearest(p, 0.04)
@@ -251,63 +92,84 @@ def inside_report(ob, owner, gun):
     return res
 
 
+def pose_dict(best, wps, M, state):
+    curl = {c: tuple(best[c]) for c in ('Middle', 'Ring', 'Pinky')}
+    curl['Index'] = tuple(best['IndexFire'] if state == 'fire' else best['IndexReady'])
+    D = C.flex_D(curl); D.update(C.thumb_D(M, wps))
+    return curl, D
+
+
+def deg(v):
+    return [float(x) for x in v]
+
+
 def main():
     sc, cam = H.setup_scene()
-    ao, ob, P, W, owner = build()
+    ao, ob, P, W, owner = build('w0')
     print('weights: verts per owner', {('palm' if k < 0 else CHAINS[k]): int((owner == k).sum()) for k in range(-1, 5)})
-    # ---- 1. 静止(開いた手)と、拳(リグの確認)。 メッシュ座標のまま撮る
+    # ---- 1. 静止(開いた手)と拳(リグの確認)。 メッシュ座標のまま撮る
     ao.matrix_world = Matrix.Identity(4)
-    c = (0.0, 0.14, 0.0)
-    H.set_pose(ao, {})
-    H.shoot(sc, cam, '1a_rest_back', c, (0, 0.05, 1), 0.55); H.shoot(sc, cam, '1b_rest_palm', c, (0, 0.05, -1), 0.55); H.shoot(sc, cam, '1c_rest_side', c, (1, 0.1, 0.1), 0.55)
-    fist = flex_D({k: (85, 95, 65) for k in ('Index', 'Middle', 'Ring', 'Pinky')})
-    fist.update({'Thumb1': H.rotvec((0.0, 0.5, 0.0))})
-    H.set_pose(ao, fist)
-    H.shoot(sc, cam, '2a_fist_back', c, (0, 0.05, 1), 0.55); H.shoot(sc, cam, '2b_fist_palm', c, (0, 0.05, -1), 0.55); H.shoot(sc, cam, '2c_fist_side', c, (1, 0.3, 0.2), 0.55)
-    # ---- 2. 銃を握る: 手の位置・向きと指の曲げを、銃のメッシュに合わせて探す
+    c0 = (0.0, 0.14, 0.0)
+    H.set_pose(ao, {}); H.shoot(sc, cam, '1a_rest_back', c0, (0, 0.05, 1), 0.55)
+    fist = C.flex_D({k: (85, 95, 65) for k in ('Index', 'Middle', 'Ring', 'Pinky')}); fist.update({'Thumb1': H.rotvec((0.0, 0.5, 0.0))})
+    H.set_pose(ao, fist); H.shoot(sc, cam, '2b_fist_palm', c0, (0, 0.05, -1), 0.55)
+    # ---- 2. 銃のメッシュから距離の格子を作り、仕様に沿って握りを探す
     gun = H.import_gun()
-    dg0 = bpy.context.evaluated_depsgraph_get(); bvh = BVHTree.FromObject(gun, dg0)
-    palm_idx = np.nonzero((W[:, 0] > 0.99) & (owner < 0))[0]; palm_idx = palm_idx[::9]
-    palm_pts = P[palm_idx]
-    a0 = {'Middle': (60, 90, 50), 'Ring': (60, 90, 50), 'Pinky': (55, 85, 45)}
-    cand = []
-    for yw in (-8, 0, 10):
-        for x in (0.040, 0.048, 0.056, 0.064):
-            for y in (-0.120, -0.104, -0.088, -0.072, -0.056):
-                for z in (-0.035, -0.022, -0.010):
-                    cand.append(((x, y, z), yw))
-    bestc = None
-    for (pos, yw) in cand:
-        Mh = np.array(Matrix.Translation(pos) @ Matrix.Rotation(math.radians(yw), 4, 'Z')) @ MH
-        pen = 0.0; gs = []
-        for q in palm_pts:
-            g = gap(bvh, (Mh @ np.r_[q, 1.0])[:3]); gs.append(g)
-            if g < 0.0005:
-                pen += ((0.0005 - g) * 1000) ** 1.5
-        gs = np.sort(gs); pen += float(np.mean(np.maximum(gs[:max(3, len(gs) // 8)] - 0.002, 0))) * 3000   # 手のひらを銃に接触させる
-        if bestc is not None and pen * 3 > bestc[0]:
-            continue
-        ang, scr = fit_fingers(bvh, Mh, a0)
-        scr += pen * 3
-        if bestc is None or scr < bestc[0]:
-            bestc = (scr, pos, yw, ang, Mh); print('cand pos %s yaw %d score %.2f palmpen %.2f' % (np.round(pos, 3), yw, scr, pen))
-    scr, pos, yw, ang, Mh = bestc
-    print('hand BEST pos', pos, 'yaw', yw, 'score %.2f' % scr, 'angles', ang)
-    ao.matrix_world = Matrix(Mh)
+    sdf, bvh = blender_sdf(gun)
     rng = np.random.default_rng(3)
-    wps, tscore = fit_thumb(bvh, Mh, np.array([-0.030, 0.025, 0.014]), rng)
-    curl = {'Index': (8, 14, 8)}; curl.update(ang)
-    D = flex_D(curl); D.update(thumb_D(Mh, wps))
-    H.set_pose(ao, D)
-    rep = inside_report(ob, owner, gun)
-    for g, r in rep.items():
-        print('PEN %-7s inside=%4d maxdepth=%.1fmm' % (g, r[0], r[1] * 1000))
-    ctr = (0.0, 0.0, -0.005)
-    for nm, d in (('3a_grip_right', (1, 0, 0.15)), ('3b_grip_left', (-1, 0, 0.15)), ('3c_grip_front', (0, 1, 0.1)), ('3d_grip_rear', (0, -1, 0.1)),
-                  ('3e_grip_top', (0, 0, 1)), ('3f_grip_34', (0.7, -0.7, 0.35)), ('3g_grip_34f', (-0.7, 0.7, 0.35))):
-        H.shoot(sc, cam, nm, ctr, d, 0.5)
-    gun.hide_render = True
-    H.shoot(sc, cam, '4a_hand_only_right', ctr, (1, 0, 0.15), 0.5); H.shoot(sc, cam, '4b_hand_only_left', ctr, (-1, 0, 0.15), 0.5)
+    x, M, best, info, cost = C.search_hand(sdf, P, owner, W, rng, log=lambda s: print('hand', s))
+    print('hand BEST cost %.2f pos %s yaw/pitch/roll %s' % (cost, np.round(x[:3], 4), np.round(x[3:], 2)))
+    print('hand parts', {k: round(float(v), 2) for k, v in info['parts'].items()})
+    wps, tdirs, tcost = C.fit_thumb(sdf, M, rng, log=lambda s: print('hand', s))
+    ao.matrix_world = Matrix(M)
+    # ---- 3. 2状態: ready(構え) / fire(発砲中)。 他の指・親指・手のひらは同じ
+    states = {}
+    ctr = (0.0, 0.0, 0.0)
+    views = (('right', (1, 0, 0.15)), ('left', (-1, 0, 0.15)), ('front', (0, 1, 0.1)), ('top', (0, 0, 1)), ('rear34', (0.7, -0.7, 0.35)))
+    for st in ('ready', 'fire'):
+        curl, Dm = pose_dict(best, wps, M, st)
+        H.set_pose(ao, Dm)
+        rep = inside_report(ob, owner, bvh)
+        for g, r in rep.items():
+            print('PEN %s %-7s inside=%4d maxdepth=%.1fmm' % (st, g, r[0], r[1] * 1000))
+        for nm, d in views:
+            H.shoot(sc, cam, '3%s_%s' % (st[0], nm), ctr, d, 0.5)
+        gun.hide_render = True
+        H.shoot(sc, cam, '4%s_hand_right' % st[0], ctr, (1, 0, 0.15), 0.5); H.shoot(sc, cam, '4%s_hand_left' % st[0], ctr, (-1, 0, 0.15), 0.5)
+        gun.hide_render = False
+        quats = {pb.name: [float(v) for v in pb.rotation_quaternion] for pb in ao.pose.bones}
+        states[st] = dict(angles_deg={k: deg(v) for k, v in curl.items()}, bone_rotation_armature_space={k: [[float(e) for e in row] for row in v] for k, v in Dm.items()},
+                          pose_bone_quaternion_wxyz=quats, pen={g: [int(r[0]), float(r[1] * 1000)] for g, r in rep.items()})
+    # ---- 4. 親指の付け根のしわ: 重みの比較(fire の姿勢で、右・後ろ・上から)
+    curl, Dm = pose_dict(best, wps, M, 'fire')
+    for wv in ('w0', 'w1', 'w2'):
+        Wv, ownv, _ = C.compute_weights(P, C.WEIGHT_VARIANTS[wv]); set_weights(ob, Wv); H.set_pose(ao, Dm)
+        gun.hide_render = True
+        for nm, d in (('right', (1, 0, 0.15)), ('rear34', (0.7, -0.7, 0.35)), ('top', (0, 0, 1))):
+            H.shoot(sc, cam, '5%s_thumb_%s' % (wv, nm), (0.0, -0.03, 0.02), d, 0.42)
+        gun.hide_render = False
+        rep = inside_report(ob, ownv, bvh)
+        print('PEN weights %s %s' % (wv, {g: (r[0], round(r[1] * 1000, 1)) for g, r in rep.items()}))
+    # ---- 5. 仕様との照合に使う数値
+    R3 = M[:3, :3]; axis = R3 @ np.array([0, 1.0, 0])
+    web = info['web']; mid = (M @ np.r_[JOINTS['Middle'][0], 1.0])[:3]
+    z_c = {c: float((M @ np.r_[JOINTS[c][0], 1.0])[2]) for c in ('Index', 'Middle', 'Ring', 'Pinky')}
+    ptsI, padI, _ = C.finger_batch('Index', np.array([best['IndexFire']]), M); ptsR, _, _ = C.finger_batch('Index', np.array([best['IndexReady']]), M)
+    gR = sdf(ptsR[0]) - C.RAD['Index']
+    spec = dict(
+        wrist_pitch_yaw_roll_deg=[float(x[4]), float(x[3]), float(x[5])], hand_axis_vs_barrel_deg=float(math.degrees(math.acos(float(axis @ np.array([0, 1.0, 0]))))),
+        forearm_axis_height_above_bore_m=float(0.068 - (M @ np.r_[C.sh(C.HAND_HEAD), 1.0])[2]),
+        web_pos=deg(web), web_gap_mm=float(info['web_gap'] * 1000), middle_top_z=float(mid[2] + C.RAD['Middle']), guard_base_z=C.GUARD_BASE_Z,
+        finger_center_z=z_c, thumb_waypoints=[deg(p) for p in wps], thumb_tip_target=deg(C.THUMB_T3),
+        index_fire_pad=deg(padI[0]), index_fire_pad_to_trigger_mm=float(np.linalg.norm(padI[0] - C.TRIG_FRONT) * 1000),
+        index_ready_tip=deg(ptsR[0][-1]), index_ready_min_gap_mm=float(gR.min() * 1000), index_ready_mean_gap_mm=float(gR[:8].mean() * 1000))
+    print('hand SPEC', json.dumps(spec))
+    out = dict(version=1, note='右手。 hand_to_gun = メッシュ(C0ずらし後)座標 -> 銃の座標(x右,y銃口,z上,原点=グリップ中心)の4x4。 bone_rotation_armature_space = tools/hand_rig_test.set_pose の D。 pose_bone_quaternion_wxyz は、hand_rig_meshy.build() で作ったアーマチュアの pose bone へそのまま入れられる。',
+               source='tools/hand_rig_meshy.py + tools/hand_grip_core.py、 仕様 リサーチ/2026-11-19_拳銃の握り方_現実の挙動.md',
+               hand_to_gun=[[float(e) for e in r] for r in M], hand_pose=dict(pos=deg(x[:3]), yaw_pitch_roll_deg=[float(x[3]), float(x[4]), float(x[5])]),
+               weights_variant='w0', states=states, spec_check=spec)
+    json.dump(out, open(os.path.join(OUT, 'hand_grip_poses.json'), 'w'), ensure_ascii=False, indent=1)
+    set_weights(ob, W); H.set_pose(ao, pose_dict(best, wps, M, 'fire')[1])
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, 'hand_rig_meshy.blend'))
 
 
