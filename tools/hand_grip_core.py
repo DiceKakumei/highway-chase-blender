@@ -24,6 +24,7 @@ MH = np.array([[0, 0, 1, 0], [0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 0, 1.0]])      
 WEB_M = (-0.036, 0.135, -0.027)        # 親指の股(親指と人さし指の間の谷)の手のひら側の皮膚。メッシュ座標(ずらす前)。 outline の分析で特定
 CHAINS = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']
 BONES = ['Hand'] + [c + str(i) for c in CHAINS for i in (1, 2, 3)]
+PADR = 0.0015      # 手袋の厚みぶん、指の半径に足す(メッシュの実測の貫通に合わせた)
 TAPER = np.repeat([1.0, 0.95, 0.88], 4)     # サンプル12点ごとの半径の倍率(基節・中節・末節)
 
 # ---- 仕様(銃の座標)
@@ -209,7 +210,7 @@ GRID_IA_F = make_grid((0, 20), (0, 20), (0, 20), 5)
 def cost_wrap_finger(sdf, M, c, grid):
     """中指・薬指・小指: グリップ前面に巻く。 -> (コスト配列, 点)"""
     pts, pad, dl = finger_batch(c, grid, M)
-    g = sdf(pts) - RAD[c] * TAPER[None, :]
+    g = sdf(pts) - (RAD[c] + PADR) * TAPER[None, :]
     cost = pen_term(g).sum(1)
     gseg = np.maximum(g.reshape(len(grid), 3, 4).min(2), 0)
     wseg = np.array([1.0, 1.0, 0.7]) if c != 'Pinky' else np.array([0.0, 0.0, 0.0])      # 小指は浅く余ってよい(接触は求めない、貫通だけ避ける)
@@ -225,7 +226,7 @@ def cost_wrap_finger(sdf, M, c, grid):
 
 def cost_index_fire(sdf, M, grid):
     pts, pad, dl = finger_batch('Index', grid, M)
-    g = sdf(pts) - RAD['Index'] * TAPER[None, :] * np.r_[np.ones(8), np.full(4, 0.85)][None, :]
+    g = sdf(pts) - (RAD['Index'] + PADR) * TAPER[None, :] * np.r_[np.ones(8), np.full(4, 0.85)][None, :]
     cost = pen_term(g).sum(1)
     dz = np.maximum(np.abs(pad[:, 2] - TRIG_FRONT[2]) - 0.009, 0)             # 引き金の板は z=0.02〜0.042 の幅がある
     d = np.sqrt((pad[:, 0] - TRIG_FRONT[0]) ** 2 + (pad[:, 1] - TRIG_FRONT[1]) ** 2 + dz ** 2) * 1000
@@ -236,7 +237,7 @@ def cost_index_fire(sdf, M, grid):
 
 def cost_index_ready(sdf, M, grid):
     pts, pad, dl = finger_batch('Index', grid, M)
-    g = sdf(pts) - RAD['Index'] * TAPER[None, :]
+    g = sdf(pts) - (RAD['Index'] + PADR) * TAPER[None, :]
     cost = pen_term(g).sum(1)
     cost += 0.06 * grid.sum(1)                                              # 伸ばす
     gm = np.maximum(g[:, :8].min(1) - 0.003, 0) * 1000
@@ -380,3 +381,118 @@ def flex_D(curl):
         for i, a in enumerate(curl.get(c, (0, 0, 0))):
             D[c + str(i + 1)] = Rx(-math.radians(a))
     return D
+
+
+# ---------------------------------------------------------------- メッシュ(スキニング後)の頂点を numpy で求める(貫通の確認・微調整用)
+def bone_mats(D):
+    """D = {骨: 3x3 (関節まわりの回転、メッシュ座標)} -> 骨ごとの 4x4 (静止 -> ポーズ)。 Hand は動かさない"""
+    A = {'Hand': np.eye(4)}
+    for c in CHAINS:
+        Ap = np.eye(4)
+        for i in range(3):
+            nm = c + str(i + 1); h = JOINTS[c][i]; Dm = D.get(nm, np.eye(3))
+            T = np.eye(4); T[:3, :3] = Dm; T[:3, 3] = h - Dm @ h
+            Ap = Ap @ T; A[nm] = Ap
+    return A
+
+
+def skin(P, W, A, M):
+    out = np.zeros_like(P)
+    for bi, b in enumerate(BONES):
+        w = W[:, bi]; m = w > 1e-6
+        if m.any():
+            out[m] += w[m, None] * (P[m] @ A[b][:3, :3].T + A[b][:3, 3])
+    return out @ M[:3, :3].T + M[:3, 3]
+
+
+def mesh_pen(sdf, P, W, owner, D, M):
+    """-> {グループ: (貫通した頂点数, 最大の深さ mm)}、 全頂点の gap"""
+    Q = skin(P, W, bone_mats(D), M); g = sdf(Q); res = {}
+    for k in range(-1, 5):
+        m = owner == k; gk = g[m]; n = int((gk < 0).sum())
+        res['palm' if k < 0 else CHAINS[k]] = (n, float(-gk.min() * 1000) if n else 0.0)
+    return res, g, Q
+
+
+# ---------------------------------------------------------------- 実際のメッシュの貫通を使った微調整
+class MeshEval:
+    """銃の近くの頂点だけを取り出し、 ポーズ D ごとの貫通(0.4mm超の部分の二乗和)を求める"""
+    def __init__(self, sdf, P, W, M, D0, cap=60000):
+        Q = skin(P, W, bone_mats(D0), M); g = sdf(Q)
+        keep = (g < 0.025) | (W[:, 0] < 0.999)          # 手の骨に固定で、銃から遠い頂点は動かない(除く)。 指・親指の頂点は全部入れる
+        idx = np.nonzero(keep)[0]
+        self.sdf = sdf; self.M = M; self.P = P[idx]; self.W = W[idx]
+
+    def pen(self, D):
+        Q = skin(self.P, self.W, bone_mats(D), self.M); g = self.sdf(Q); d = np.maximum(-g * 1000 - 0.4, 0)
+        return float((d ** 2).sum() * 0.02), float(d.max() + 0.4 if d.max() > 0 else 0.0)
+
+
+def _orig_cost(sdf, M, c, a, mode):
+    g = np.array([a], float)
+    if mode == 'wrap':
+        return float(cost_wrap_finger(sdf, M, c, g)[0])
+    if mode == 'fire':
+        return float(cost_index_fire(sdf, M, g)[0][0])
+    return float(cost_index_ready(sdf, M, g)[0])
+
+
+def refine_finger(sdf, ev, M, curl, Dth, c, mode, log=print):
+    a = np.array(curl[c], float); lo = np.array([0, 0, 0.0]); hi = np.array([120, 120, 90.0])
+
+    def obj(v):
+        cl = dict(curl); cl[c] = tuple(v); D = flex_D(cl); D.update(Dth)
+        return _orig_cost(sdf, M, c, v, mode) + ev.pen(D)[0]
+    f = obj(a)
+    for sweep in range(6):
+        imp = False
+        for k in range(3):
+            for sg in (5.0, -5.0):
+                b = a.copy(); b[k] = np.clip(b[k] + sg, lo[k], hi[k]); fb = obj(b)
+                if fb < f - 1e-6:
+                    a, f = b, fb; imp = True
+        if not imp:
+            break
+    return tuple(float(t) for t in a), f
+
+
+def refine_thumb(sdf, ev_fn, M, curl, dirs, rest_d, rng, iters=22, ncand=120):
+    def to_D(dr):
+        P, S = thumb_points(M, dr[None]); return thumb_D(M, P[0, 1:]), P[0, 1:]
+
+    def obj(dr):
+        D, _ = to_D(dr); D2 = dict(flex_D(curl)); D2.update(D)
+        return float(thumb_cost(sdf, M, dr[None], rest_d)[0]) + ev_fn.pen(D2)[0]
+    cur = dirs.copy(); f = obj(cur); sp = 0.10
+    for it in range(iters):
+        imp = False
+        for _ in range(ncand):
+            c = cur + rng.normal(0, sp, cur.shape); c = c / np.linalg.norm(c, axis=1, keepdims=True); fc = obj(c)
+            if fc < f - 1e-6:
+                cur, f = c, fc; imp = True
+        if not imp:
+            sp *= 0.7
+    D, wps = to_D(cur)
+    return cur, wps, D, f
+
+
+def solve(sdf, P, owner, W, rng, log=print):
+    x, M, best, info, cost = search_hand(sdf, P, owner, W, rng, log=log)
+    log('BEST cost %.2f pos %s yaw/pitch/roll %s' % (cost, np.round(x[:3], 4), np.round(x[3:], 2)))
+    log('parts %s' % {k: round(float(v), 2) for k, v in info['parts'].items()})
+    wps, tdirs, tcost = fit_thumb(sdf, M, rng, log=log)
+    J = JOINTS['Thumb']; rest_d = [(M[:3, :3] @ (J[i + 1] - J[i])) / np.linalg.norm(J[i + 1] - J[i]) for i in range(3)]
+    Dth = thumb_D(M, wps)
+    curl = {c: tuple(float(t) for t in best[c]) for c in ('Middle', 'Ring', 'Pinky')}; curl['Index'] = tuple(float(t) for t in best['IndexFire'])
+    ev = MeshEval(sdf, P, W, M, dict(flex_D(curl), **Dth))
+    log('mesh pen before refine: %s' % (ev.pen(dict(flex_D(curl), **Dth)),))
+    for sweep in range(2):
+        for c in ('Middle', 'Ring', 'Pinky'):
+            curl[c], f = refine_finger(sdf, ev, M, curl, Dth, c, 'wrap')
+        tdirs, wps, Dth, f = refine_thumb(sdf, ev, M, curl, tdirs, rest_d, rng)
+        log('refine sweep %d: curl %s thumb cost %.2f pen %s' % (sweep, {k: tuple(round(t) for t in v) for k, v in curl.items()}, f, ev.pen(dict(flex_D(curl), **Dth))))
+    curl_f = dict(curl); curl_f['Index'], f = refine_finger(sdf, ev, M, curl, Dth, 'Index', 'fire')
+    curl_r = dict(curl); curl_r['Index'] = tuple(float(t) for t in best['IndexReady'])
+    ev_r = MeshEval(sdf, P, W, M, dict(flex_D(curl_r), **Dth))
+    curl_r['Index'], f = refine_finger(sdf, ev_r, M, curl_r, Dth, 'Index', 'ready')
+    return dict(x=x, M=M, wps=wps, Dth=Dth, curl={'fire': curl_f, 'ready': curl_r}, info=info, cost=cost, tdirs=tdirs)

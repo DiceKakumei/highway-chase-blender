@@ -92,10 +92,9 @@ def inside_report(ob, owner, bvh):
     return res
 
 
-def pose_dict(best, wps, M, state):
-    curl = {c: tuple(best[c]) for c in ('Middle', 'Ring', 'Pinky')}
-    curl['Index'] = tuple(best['IndexFire'] if state == 'fire' else best['IndexReady'])
-    D = C.flex_D(curl); D.update(C.thumb_D(M, wps))
+def pose_dict(S, state):
+    curl = {k: tuple(v) for k, v in S['curl'][state].items()}
+    D = C.flex_D(curl); D.update(S['Dth'])
     return curl, D
 
 
@@ -117,18 +116,22 @@ def main():
     gun = H.import_gun()
     sdf, bvh = blender_sdf(gun)
     rng = np.random.default_rng(3)
-    x, M, best, info, cost = C.search_hand(sdf, P, owner, W, rng, log=lambda s: print('hand', s))
-    print('hand BEST cost %.2f pos %s yaw/pitch/roll %s' % (cost, np.round(x[:3], 4), np.round(x[3:], 2)))
-    print('hand parts', {k: round(float(v), 2) for k, v in info['parts'].items()})
-    wps, tdirs, tcost = C.fit_thumb(sdf, M, rng, log=lambda s: print('hand', s))
+    S = C.solve(sdf, P, owner, W, rng, log=lambda s_: print('hand', s_))
+    x, M, wps, info, cost = S['x'], S['M'], S['wps'], S['info'], S['cost']
+    best = dict(Middle=S['curl']['fire']['Middle'], Ring=S['curl']['fire']['Ring'], Pinky=S['curl']['fire']['Pinky'], IndexFire=S['curl']['fire']['Index'], IndexReady=S['curl']['ready']['Index'])
     ao.matrix_world = Matrix(M)
     # ---- 3. 2状態: ready(構え) / fire(発砲中)。 他の指・親指・手のひらは同じ
     states = {}
     ctr = (0.0, 0.0, 0.0)
     views = (('right', (1, 0, 0.15)), ('left', (-1, 0, 0.15)), ('front', (0, 1, 0.1)), ('top', (0, 0, 1)), ('rear34', (0.7, -0.7, 0.35)))
     for st in ('ready', 'fire'):
-        curl, Dm = pose_dict(best, wps, M, st)
+        curl, Dm = pose_dict(S, st)
         H.set_pose(ao, Dm)
+        npen, _, Qn = C.mesh_pen(sdf, P, W, owner, Dm, M)
+        print('PEN numpy-skin %s %s' % (st, {k: (v[0], round(v[1], 2)) for k, v in npen.items()}))
+        ev_ = ob.evaluated_get(bpy.context.evaluated_depsgraph_get()); evm = ev_.to_mesh(); cb = np.empty(len(evm.vertices) * 3, np.float32); evm.vertices.foreach_get('co', cb); cb = cb.reshape(-1, 3).astype(float)
+        Qb = cb @ np.array(ob.matrix_world)[:3, :3].T + np.array(ob.matrix_world)[:3, 3]; ev_.to_mesh_clear()
+        print('hand numpy-vs-blender skin max diff mm %.3f' % (np.abs(Qb - Qn).max() * 1000))
         rep = inside_report(ob, owner, bvh)
         for g, r in rep.items():
             print('PEN %s %-7s inside=%4d maxdepth=%.1fmm' % (st, g, r[0], r[1] * 1000))
@@ -141,7 +144,7 @@ def main():
         states[st] = dict(angles_deg={k: deg(v) for k, v in curl.items()}, bone_rotation_armature_space={k: [[float(e) for e in row] for row in v] for k, v in Dm.items()},
                           pose_bone_quaternion_wxyz=quats, pen={g: [int(r[0]), float(r[1] * 1000)] for g, r in rep.items()})
     # ---- 4. 親指の付け根のしわ: 重みの比較(fire の姿勢で、右・後ろ・上から)
-    curl, Dm = pose_dict(best, wps, M, 'fire')
+    curl, Dm = pose_dict(S, 'fire')
     for wv in ('w0', 'w1', 'w2'):
         Wv, ownv, _ = C.compute_weights(P, C.WEIGHT_VARIANTS[wv]); set_weights(ob, Wv); H.set_pose(ao, Dm)
         gun.hide_render = True
@@ -169,7 +172,7 @@ def main():
                hand_to_gun=[[float(e) for e in r] for r in M], hand_pose=dict(pos=deg(x[:3]), yaw_pitch_roll_deg=[float(x[3]), float(x[4]), float(x[5])]),
                weights_variant='w0', states=states, spec_check=spec)
     json.dump(out, open(os.path.join(OUT, 'hand_grip_poses.json'), 'w'), ensure_ascii=False, indent=1)
-    set_weights(ob, W); H.set_pose(ao, pose_dict(best, wps, M, 'fire')[1])
+    set_weights(ob, W); H.set_pose(ao, pose_dict(S, 'fire')[1])
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, 'hand_rig_meshy.blend'))
 
 
