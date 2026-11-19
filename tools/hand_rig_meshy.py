@@ -71,23 +71,30 @@ def blender_sdf(gun):
 
 
 def inside_report(ob, owner, bvh):
+    """頂点ごとの貫通。 normal = 最寄りの面の法線の符号(深さ=最寄り面までの距離)、 ray = 3方向のレイの偶奇の多数決(2/3)。 銃のメッシュは内部の面があり、 レイ1本だと偽陽性が出るため"""
     dg = bpy.context.evaluated_depsgraph_get(); ev = ob.evaluated_get(dg); me = ev.to_mesh(); M = ob.matrix_world
     res = {}
+    dirs = [Vector((1, 0.0013, 0.0007)), Vector((0.0009, 1, 0.0011)), Vector((0.0008, 0.0012, 1))]
     for i, v in enumerate(me.vertices):
         p = M @ v.co
         loc, nrm, idx, dist = bvh.find_nearest(p, 0.04)
         if loc is None:
             continue
-        hits = 0; q = p.copy(); dn = Vector((1, 0.0013, 0.0007))
-        for _ in range(12):
-            h = bvh.ray_cast(q, dn)
-            if h[0] is None:
-                break
-            hits += 1; q = h[0] + dn.normalized() * 1e-5
         name = 'palm' if owner[i] < 0 else CHAINS[owner[i]]
-        r = res.setdefault(name, [0, 0.0])
-        if hits % 2 == 1:
+        r = res.setdefault(name, [0, 0.0, 0, 0.0])
+        if (p - loc).dot(nrm) < 0:
             r[0] += 1; r[1] = max(r[1], dist)
+        odd = 0
+        for dn in dirs:
+            hits = 0; q = p.copy()
+            for _ in range(12):
+                h = bvh.ray_cast(q, dn)
+                if h[0] is None:
+                    break
+                hits += 1; q = h[0] + dn.normalized() * 1e-5
+            odd += hits % 2
+        if odd >= 2:
+            r[2] += 1; r[3] = max(r[3], dist)
     ev.to_mesh_clear()
     return res
 
@@ -124,6 +131,7 @@ def main():
     states = {}
     ctr = (0.0, 0.0, 0.0)
     views = (('right', (1, 0, 0.15)), ('left', (-1, 0, 0.15)), ('front', (0, 1, 0.1)), ('top', (0, 0, 1)), ('rear34', (0.7, -0.7, 0.35)))
+    close = (('web_rear', (0.0, -0.025, 0.035), (0.15, -1, 0.35), 0.3), ('thumb_left', (-0.02, -0.03, 0.03), (-1, -0.5, 0.3), 0.3), ('thumb_leftfront', (-0.02, 0.0, 0.04), (-1, 0.5, 0.3), 0.3))
     for st in ('ready', 'fire'):
         curl, Dm = pose_dict(S, st)
         H.set_pose(ao, Dm)
@@ -134,25 +142,28 @@ def main():
         print('hand numpy-vs-blender skin max diff mm %.3f' % (np.abs(Qb - Qn).max() * 1000))
         rep = inside_report(ob, owner, bvh)
         for g, r in rep.items():
-            print('PEN %s %-7s inside=%4d maxdepth=%.1fmm' % (st, g, r[0], r[1] * 1000))
+            print('PEN %s %-7s normal=%4d maxdepth=%.1fmm | ray2of3=%4d maxdist=%.1fmm' % (st, g, r[0], r[1] * 1000, r[2], r[3] * 1000))
         for nm, d in views:
-            H.shoot(sc, cam, '3%s_%s' % (st[0], nm), ctr, d, 0.5)
+            H.shoot(sc, cam, '3%s_%s' % (st, nm), ctr, d, 0.5)
+        if st == 'fire':
+            for nm, cc, d, dist in close:
+                H.shoot(sc, cam, '3%s_%s' % (st, nm), cc, d, dist)
         gun.hide_render = True
-        H.shoot(sc, cam, '4%s_hand_right' % st[0], ctr, (1, 0, 0.15), 0.5); H.shoot(sc, cam, '4%s_hand_left' % st[0], ctr, (-1, 0, 0.15), 0.5)
+        H.shoot(sc, cam, '4%s_hand_right' % st, ctr, (1, 0, 0.15), 0.5); H.shoot(sc, cam, '4%s_hand_left' % st, ctr, (-1, 0, 0.15), 0.5)
         gun.hide_render = False
         quats = {pb.name: [float(v) for v in pb.rotation_quaternion] for pb in ao.pose.bones}
         states[st] = dict(angles_deg={k: deg(v) for k, v in curl.items()}, bone_rotation_armature_space={k: [[float(e) for e in row] for row in v] for k, v in Dm.items()},
-                          pose_bone_quaternion_wxyz=quats, pen={g: [int(r[0]), float(r[1] * 1000)] for g, r in rep.items()})
+                          pose_bone_quaternion_wxyz=quats, pen={g: [int(r[0]), float(r[1] * 1000)] for g, r in rep.items()}, pen_numpy={k: [v[0], v[1]] for k, v in npen.items()})
     # ---- 4. 親指の付け根のしわ: 重みの比較(fire の姿勢で、右・後ろ・上から)
     curl, Dm = pose_dict(S, 'fire')
-    for wv in ('w0', 'w1', 'w2'):
+    for wv in ('w0', 'w3', 'w4'):
         Wv, ownv, _ = C.compute_weights(P, C.WEIGHT_VARIANTS[wv]); set_weights(ob, Wv); H.set_pose(ao, Dm)
         gun.hide_render = True
-        for nm, d in (('right', (1, 0, 0.15)), ('rear34', (0.7, -0.7, 0.35)), ('top', (0, 0, 1))):
-            H.shoot(sc, cam, '5%s_thumb_%s' % (wv, nm), (0.0, -0.03, 0.02), d, 0.42)
+        for nm, d in (('left', (-1, -0.5, 0.3)), ('rear', (-0.3, -1, 0.4)), ('palm', (-0.6, -0.2, -0.7))):
+            H.shoot(sc, cam, '5%s_thumb_%s' % (wv, nm), (-0.01, -0.04, 0.03), d, 0.3)
         gun.hide_render = False
         rep = inside_report(ob, ownv, bvh)
-        print('PEN weights %s %s' % (wv, {g: (r[0], round(r[1] * 1000, 1)) for g, r in rep.items()}))
+        print('PEN weights %s %s' % (wv, {g: (r[0], round(r[1] * 1000, 1), r[2]) for g, r in rep.items()}))
     # ---- 5. 仕様との照合に使う数値
     R3 = M[:3, :3]; axis = R3 @ np.array([0, 1.0, 0])
     web = info['web']; mid = (M @ np.r_[JOINTS['Middle'][0], 1.0])[:3]
@@ -166,6 +177,11 @@ def main():
         finger_center_z=z_c, thumb_waypoints=[deg(p) for p in wps], thumb_tip_target=deg(C.THUMB_T3),
         index_fire_pad=deg(padI[0]), index_fire_pad_to_trigger_mm=float(np.linalg.norm(padI[0] - C.TRIG_FRONT) * 1000),
         index_ready_tip=deg(ptsR[0][-1]), index_ready_min_gap_mm=float(gR.min() * 1000), index_ready_mean_gap_mm=float(gR[:8].mean() * 1000))
+    Dm = pose_dict(S, 'fire')[1]; _, gq, Qq = C.mesh_pen(sdf, P, W, owner, Dm, M)
+    near_web = np.nonzero(np.linalg.norm(P - C.WEB[None, :], axis=1) < 0.02)[0]; j = near_web[np.argmin(gq[near_web])]
+    spec['mesh_web_min_gap_mm'] = float(gq[j] * 1000); spec['mesh_web_contact_pos'] = deg(Qq[j])
+    for k_, nm_ in ((2, 'Middle'), (3, 'Ring'), (4, 'Pinky'), (1, 'Index'), (0, 'Thumb')):
+        m_ = owner == k_; spec['mesh_min_gap_mm_' + nm_] = float(gq[m_].min() * 1000); spec['mesh_zmax_' + nm_] = float(Qq[m_][:, 2].max()); spec['mesh_zmin_' + nm_] = float(Qq[m_][:, 2].min())
     print('hand SPEC', json.dumps(spec))
     out = dict(version=1, note='右手。 hand_to_gun = メッシュ(C0ずらし後)座標 -> 銃の座標(x右,y銃口,z上,原点=グリップ中心)の4x4。 bone_rotation_armature_space = tools/hand_rig_test.set_pose の D。 pose_bone_quaternion_wxyz は、hand_rig_meshy.build() で作ったアーマチュアの pose bone へそのまま入れられる。',
                source='tools/hand_rig_meshy.py + tools/hand_grip_core.py、 仕様 リサーチ/2026-11-19_拳銃の握り方_現実の挙動.md',

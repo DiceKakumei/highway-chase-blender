@@ -99,8 +99,10 @@ def seg_dist(P, a, b):
 WEIGHT_VARIANTS = {
     # thumb_bw=関節まわりのつなぎ幅の半分、thumb_extra=親指の影響半径に足す値、base_bw=親指の付け根(手の骨→Thumb1)のつなぎ幅の半分、s_cut=付け根の手前のどこまで親指に含めるか
     'w0': dict(thumb_bw=0.020, thumb_extra=0.018, base_bw=0.020, s_cut=-0.012),
-    'w1': dict(thumb_bw=0.030, thumb_extra=0.024, base_bw=0.040, s_cut=-0.030),
-    'w2': dict(thumb_bw=0.035, thumb_extra=0.030, base_bw=0.060, s_cut=-0.050),
+    'w1': dict(thumb_bw=0.030, thumb_extra=0.024, base_bw=0.040, s_cut=-0.030),      # 広げると、袖口にとげ状のゆがみが出た(h12で却下)
+    'w2': dict(thumb_bw=0.035, thumb_extra=0.030, base_bw=0.060, s_cut=-0.050),      # 同上(さらに悪い)
+    'w3': dict(thumb_bw=0.014, thumb_extra=0.014, base_bw=0.012, s_cut=0.000),       # 狭く・鋭く
+    'w4': dict(thumb_bw=0.025, thumb_extra=0.018, base_bw=0.030, s_cut=-0.012),      # 付け根だけやや広く(範囲は同じ)
 }
 
 
