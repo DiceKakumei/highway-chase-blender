@@ -74,7 +74,7 @@ def compute_weights(P):
             continue
         own_final[i] = ci
         J = JOINTS[c]; l1 = np.linalg.norm(J[1] - J[0]); l2 = np.linalg.norm(J[2] - J[1])
-        bw = 0.011 if c == 'Thumb' else 0.008
+        bw = 0.020 if c == 'Thumb' else 0.008
         t0 = smooth((s - 0.0) / (2 * bw) + 0.5); t1 = smooth((s - l1) / (2 * bw) + 0.5); t2 = smooth((s - l1 - l2) / (2 * bw) + 0.5)
         W[i, 0] = 1 - t0
         W[i, bi[c + '1']] = t0 * (1 - t1); W[i, bi[c + '2']] = t1 * (1 - t2); W[i, bi[c + '3']] = t2
