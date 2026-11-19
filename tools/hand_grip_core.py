@@ -427,7 +427,7 @@ class MeshEval:
 
     def pen(self, D):
         Q = skin(self.P, self.W, bone_mats(D), self.M); g = self.sdf(Q); d = np.maximum(-g * 1000 - 0.4, 0)
-        return float((d ** 2).sum() * 0.02), float(d.max() + 0.4 if d.max() > 0 else 0.0)
+        return float((d ** 2).sum() * 0.04), float(d.max() + 0.4 if d.max() > 0 else 0.0)
 
 
 def _orig_cost(sdf, M, c, a, mode):
@@ -446,15 +446,16 @@ def refine_finger(sdf, ev, M, curl, Dth, c, mode, log=print):
         cl = dict(curl); cl[c] = tuple(v); D = flex_D(cl); D.update(Dth)
         return _orig_cost(sdf, M, c, v, mode) + ev.pen(D)[0]
     f = obj(a)
-    for sweep in range(6):
-        imp = False
-        for k in range(3):
-            for sg in (5.0, -5.0):
-                b = a.copy(); b[k] = np.clip(b[k] + sg, lo[k], hi[k]); fb = obj(b)
-                if fb < f - 1e-6:
-                    a, f = b, fb; imp = True
-        if not imp:
-            break
+    for step in (5.0, 2.5, 1.25):
+        for sweep in range(6):
+            imp = False
+            for k in range(3):
+                for sg in (step, -step):
+                    b = a.copy(); b[k] = np.clip(b[k] + sg, lo[k], hi[k]); fb = obj(b)
+                    if fb < f - 1e-6:
+                        a, f = b, fb; imp = True
+            if not imp:
+                break
     return tuple(float(t) for t in a), f
 
 
