@@ -11,7 +11,7 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 ARGV = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else ['out']
-OUT = ARGV[0]; os.makedirs(OUT, exist_ok=True)
+OUT = ARGV[0]
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PRM = json.load(open(ARGV[1])) if len(ARGV) > 1 else {}
 PART = PRM.get('part', 'all')
@@ -296,12 +296,14 @@ def part_city():
                     'window_y': [best, best + 200], 'build_seconds': round(time.time() - t0, 1)}
 
 
-if PART in ('assets', 'all'):
-    part_assets()
-if PART in ('city', 'all'):
-    try:
-        part_city()
-    except Exception as e:
-        import traceback; traceback.print_exc(); print('ERR city', e, flush=True)
-json.dump(INFO, open(os.path.join(OUT, 'asset_info_%s.json' % PART), 'w'), ensure_ascii=False, indent=1)
-print('done', PART, flush=True)
+if __name__ == '__main__':          # 別のスクリプトから import して assemble_vehicle だけ使えるようにする
+    os.makedirs(OUT, exist_ok=True)
+    if PART in ('assets', 'all'):
+        part_assets()
+    if PART in ('city', 'all'):
+        try:
+            part_city()
+        except Exception as e:
+            import traceback; traceback.print_exc(); print('ERR city', e, flush=True)
+    json.dump(INFO, open(os.path.join(OUT, 'asset_info_%s.json' % PART), 'w'), ensure_ascii=False, indent=1)
+    print('done', PART, flush=True)
