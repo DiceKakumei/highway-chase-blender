@@ -267,12 +267,12 @@ def main():
     # ---- 2. 銃を握る: 手の位置・向きと指の曲げを、銃のメッシュに合わせて探す
     gun = H.import_gun()
     dg0 = bpy.context.evaluated_depsgraph_get(); bvh = BVHTree.FromObject(gun, dg0)
-    palm_idx = np.nonzero((W[:, 0] > 0.99) & (owner < 0))[0]; palm_idx = palm_idx[::25]
+    palm_idx = np.nonzero((W[:, 0] > 0.99) & (owner < 0))[0]; palm_idx = palm_idx[::9]
     palm_pts = P[palm_idx]
     a0 = {'Middle': (60, 90, 50), 'Ring': (60, 90, 50), 'Pinky': (55, 85, 45)}
     cand = []
-    for yw in (-8, 0, 10, 20):
-        for x in (0.032, 0.040, 0.048, 0.056):
+    for yw in (-8, 0, 10):
+        for x in (0.040, 0.048, 0.056, 0.064):
             for y in (-0.120, -0.104, -0.088, -0.072, -0.056):
                 for z in (-0.035, -0.022, -0.010):
                     cand.append(((x, y, z), yw))
@@ -283,7 +283,7 @@ def main():
         for q in palm_pts:
             g = gap(bvh, (Mh @ np.r_[q, 1.0])[:3]); gs.append(g)
             if g < 0.0005:
-                pen += (0.0005 - g) * 1000
+                pen += ((0.0005 - g) * 1000) ** 1.5
         gs = np.sort(gs); pen += float(np.mean(np.maximum(gs[:max(3, len(gs) // 8)] - 0.002, 0))) * 3000   # 手のひらを銃に接触させる
         if bestc is not None and pen * 3 > bestc[0]:
             continue
