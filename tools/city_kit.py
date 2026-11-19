@@ -821,7 +821,8 @@ def plan_streets_legacy(city, center, radius, cam, seed, pol, vg, night, hour):
             if d == 'far' and dc > pol['far_fence_dist']:
                 kw['fence'] = False
             cl = [(float(x), float(y), 0.0) for x, y in line]
-            md, info, lamps, Pp = sk.build_geometry(kw, cl, 1e9, sd, d, **{})
+            lazy = bool(pol.get('lazy_streets')) and d in ('near', 'mid')           # 配置固定モード: 計画では far で作り(軽い)、near/mid の実立体は build_city がジョブごとに必要な分だけ作る
+            md, info, lamps, Pp = sk.build_geometry(kw, cl, 1e9, sd, 'far' if lazy else d, **{})
             groups[d].append(dict(md=md, info=info, P=Pp, lamps=lamps, dc=dc, cls=cls, side=side, line=np.asarray(line, float)[:, :2], o_w=info['found_front'], wall=info['wall_plane'], q=gap))
     return dict(groups=groups, ultra=[], bands=bands, pinfo=[], near_m=near_m, mid_m=mid_m)
 
@@ -1011,7 +1012,7 @@ def plan_streets(pieces, bg, cam, seed, pol, night, hour, rect_polys=None):
                 continue
             cl = [(float(x), float(y), 0.0) for x, y in line]
             md, info, lamps, Pp = sk.build_geometry(kw, cl, 1e9, sd, d, **{})
-            groups[d].append(dict(md=md, info=info, P=Pp, lamps=lamps, dc=dc, cls=cls, side=side, line=line, o_w=info['found_front'], wall=info['wall_plane'], q=q))
+            groups[d].append(dict(md=md, info=info, P=Pp, lamps=lamps, dc=dc, cls=cls, side=side, line=line, o_w=info['found_front'], wall=info['wall_plane'], q=q, kw=kw, cl=cl, sd=sd))
     return dict(groups=groups, ultra=ultra, bands=bands, pinfo=pinfo, near_m=near_m, mid_m=mid_m)
 
 
@@ -1663,7 +1664,7 @@ def ultra_quads(it, smat, stride):
 # 本体
 # ================================================================================================
 def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=20.0, seed=0, detail_policy=None, ground_z=-12.0, emit=8.0,
-               material_hook=None, viaduct=True, viaduct_material=None, obs_emit=60.0, street_emit=60.0, pool_emit=2.2, name='City'):
+               material_hook=None, viaduct=True, viaduct_material=None, obs_emit=60.0, street_emit=60.0, pool_emit=2.2, name='City', job_points=None, job_dist=600.0, tree_job_dist=900.0):
     """背景の街を作る。 -> 街のルート(空の親オブジェクト)。 root['city_stats'] = 棟数・ポリゴン・構築時間(JSON)。
     city_json_path = city.json のパス(または読み込んだ辞書)。 center = (x, y)、radius = 出す範囲[m]。 camera_path_or_points = カメラの通る点 [(x, y[, z])...](None なら全部 far)。
     hour = 時刻(0〜24)。 17時〜5時台は夜(窓の点灯)。 seed = 乱数の種(同じ seed・同じ建物 = 同じ結果)。 detail_policy = DEFAULT_POLICY の上書き。
@@ -1676,6 +1677,12 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
     cam = None
     if camera_path_or_points is not None and len(camera_path_or_points):
         cam = np.asarray([(p[0], p[1]) for p in camera_path_or_points], float)
+    # job_points = このジョブ(描画チャンク)のカメラの点。 指定すると「配置固定」モード:
+    #   camera_path_or_points = 動画全体のカメラの経路(全ジョブ共通)。 建物・道路の計画・種類・矩形・LOD は全部これで決め、ジョブに依存しない。
+    #   ジョブごとに変えるのは、遠い(job_dist 超)の建物・道路の「実立体→far」の置き換えと、木の出す範囲だけ(どちらも遠景で見分けがつかない距離)。
+    jp = None
+    if job_points is not None and len(job_points):
+        jp = np.asarray([(p[0], p[1]) for p in job_points], float)
     cx = Ctx(material_hook, emit, night, hour, ground_z)
     root = bpy.data.objects.new(name, None); root.empty_display_size = 5.0; bpy.context.scene.collection.objects.link(root)
     st = dict(hour=hour, night=night, seed=seed, center=list(center), radius=radius, policy={k: v for k, v in pol.items() if not isinstance(v, dict)})
@@ -1688,6 +1695,14 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
     st['overlap'] = plan['overlap']; st['rects'] = dict(fitted=plan['rect_fitted'], clipped=plan['rect_clipped'], dropped=plan['rect_dropped'], final_clipped=plan.get('final_clipped', 0))
     st['aprons'] = dict(faces=aprons['faces'], road_faces=aprons['road_faces'], apron_quads=len(aprons['apron']), plinth_quads=len(aprons['plinth']))
     recs = plan['recs']
+    if jp is not None:                                   # 配置固定モード: このジョブのカメラから遠い実立体は far に置き換える(形・位置・矩形・色・窓は同じ)
+        nd = 0
+        for r in recs:
+            if r['detail'] != 'far' and cam_dist2d(jp, r['c'][0], r['c'][1], r['r']) > job_dist:
+                r['detail'] = 'far'; nd += 1
+        fps2 = footprints(plan)
+        plan['aprons'] = aprons = plan_aprons(fps2, street_items(sp), pol) if pol.get('apron', True) else aprons
+        st['job_downgraded_buildings'] = nd
     far = [r for r in recs if r['detail'] == 'far']; solid = [r for r in recs if r['detail'] != 'far']
     st['kinds_all'] = dict(plan['kinds']); st['detail_counts'] = {d: sum(1 for r in recs if r['detail'] == d) for d in ('near', 'mid', 'far')}
     st['houses'] = len(plan['houses'])
@@ -1750,8 +1765,19 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
     t = time.time()
     smat = StreetMats(cx, street_emit); sa = Acc(); pools = []; lights = []
     nstreet = {'near': 0, 'mid': 0, 'far': 0}
-    for d, items in sp['groups'].items():
+    nsdown = 0; nsup = 0
+    street_job = float(pol.get('street_job_dist', 400.0))
+    for d0, items in sp['groups'].items():
         for it in items:
+            d = d0
+            if jp is not None and d0 != 'far':
+                dj = cam_dist2d(jp, float(it['line'][:, 0].mean()), float(it['line'][:, 1].mean()), 0.5 * 4.0 * (len(it['line']) - 1))
+                near_lamps = [lp for lp in it['lamps']]
+                if pol.get('lazy_streets') and dj <= street_job:        # 計画は far で作ってあるので、近いものだけ実立体(near/mid)に作り直す
+                    md_, info_, lamps_, Pp_ = sk.build_geometry(it['kw'], it['cl'], 1e9, it['sd'], d0, **{})
+                    it = dict(it, md=md_, info=info_, P=Pp_); nsup += 1
+                else:
+                    d = 'far'; nsdown += 1
             md, info, P = it['md'], it['info'], it['P']
             if not md.F:
                 continue
@@ -1769,8 +1795,9 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
                     for fi in np.nonzero(miF == k_)[0]:
                         pts = np.asarray([md.V[k] for k in md.F[int(fi)]]); pools.append(pts.mean(0))
             else:
+                lc = jp if jp is not None else cam
                 for lp in it['lamps']:
-                    lights.append((float(np.hypot(*(cam - np.array(lp[:2])).T).min()) if cam is not None else 0.0, lp))
+                    lights.append((float(np.hypot(*(lc - np.array(lp[:2])).T).min()) if lc is not None else 0.0, lp))
     # 150mより遠い道路: 車道・縁石・歩道・犬走り・基礎の立ち上がりの帯(街灯・木・柵は無し)
     nultra = 0
     for it in sp['ultra']:
@@ -1794,8 +1821,13 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
             UVp += [(sp_, APRON_Z), (sp_ + L_, APRON_Z), (sp_ + L_, PLINTH_TOP), (sp_, PLINTH_TOP)]; sp_ += L_
         sa.add(Vp, UVp, [4] * len(aprons['plinth']), [mi_fnd] * len(aprons['plinth']))
     # 近景の街灯の実ライト(上限あり)。 残りは光だまり
-    lights.sort(key=lambda a: a[0]); lit_pos = [lp for _, lp in lights[:pol['street_lights']]]
-    for _, lp in lights[pol['street_lights']:]:
+    lights.sort(key=lambda a: a[0])
+    if jp is not None:                           # 配置固定モード: 実ライトは、このジョブのカメラから light_job_dist 以内だけ(遠い街灯の光は弱く、ジョブの境目で見えない)
+        n_lit = min(pol['street_lights'], sum(1 for dl, _ in lights if dl <= float(pol.get('light_job_dist', 110.0))))
+    else:
+        n_lit = pol['street_lights']
+    lit_pos = [lp for _, lp in lights[:n_lit]]
+    for _, lp in lights[n_lit:]:
         pools.append(np.asarray(lp))
     for i, lp in enumerate(lit_pos):
         ld = bpy.data.lights.new('citylamp%d' % i, 'SPOT'); ld.energy = 2500.0; ld.spot_size = math.radians(130); ld.spot_blend = 0.8; ld.shadow_soft_size = 0.12; ld.color = (1.0, 0.80, 0.58)
@@ -1845,6 +1877,8 @@ def build_city(city_json_path, center, radius, camera_path_or_points=None, hour=
         if cam is not None:
             tl = [tr for tr in tl if np.hypot(cam[:, 0] - tr[0], cam[:, 1] - tr[1]).min() <= pol['tree_dist']]
             tl.sort(key=lambda tr: float(np.hypot(cam[:, 0] - tr[0], cam[:, 1] - tr[1]).min()))
+        if jp is not None:                           # 配置固定モード: 全体の経路で決めた木のうち、このジョブのカメラの近く(tree_job_dist)だけを出す。 並びは全体で固定(cap を使わない)
+            tl = [tr for tr in tl if np.hypot(jp[:, 0] - tr[0], jp[:, 1] - tr[1]).min() <= tree_job_dist]
         for (x, y, size) in tl[:pol['tree_cap']]:
             rr = rng_for(seed, int(abs(x) * 131 + abs(y) * 17) & 0xffffff)
             pme, zmax = protos[int(rr.random() * len(protos))]

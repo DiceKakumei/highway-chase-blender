@@ -759,14 +759,18 @@ def build_kit():
     if tools not in sys.path:
         sys.path.insert(0, tools)
     import city_kit as ck
-    pts = R.P.get('_cam_pts') or [(0.0, 700.0, 1.0)]
-    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
-    center = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
-    radius = max(max(xs) - min(xs), max(ys) - min(ys)) / 2 + R.P['kit_radius']
-    pol = dict(R.P.get('kit_policy') or {})
-    root = ck.build_city(os.path.join(R.ROOT, 'assets', 'city.json'), center, radius, pts, hour=R.P['kit_hour'], seed=1, ground_z=GZ, emit=R.P['kit_emit'],
-                         material_hook=R.add_fog, detail_policy=pol, obs_emit=R.P['obs_emit'], street_emit=R.P['street_emit'], pool_emit=R.P['pool_emit'])
+    job = R.P.get('_cam_pts') or [(0.0, 700.0, 1.0)]
+    allp = R.P.get('_cam_pts_all') or job
+    ys = [p[1] for p in allp]
+    center = (0.0, (min(ys) + max(ys)) / 2)                   # 全ジョブ共通(計画が変わらない)
+    radius = (max(ys) - min(ys)) / 2 + R.P['kit_radius']
+    pol = dict(max_near=10 ** 6, max_mid=10 ** 6, max_street_near_m=1e9, max_street_mid_m=1e9, tree_cap=10 ** 6, street_lights=48, lazy_streets=True,
+               street_job_dist=400.0, light_job_dist=110.0)                # 計画は全ジョブ共通(上限なし)。ジョブごとに変わるのは遠景への置き換えだけ
+    pol.update(R.P.get('kit_policy') or {})
+    root = ck.build_city(os.path.join(R.ROOT, 'assets', 'city.json'), center, radius, allp, hour=R.P['kit_hour'], seed=1, ground_z=GZ, emit=R.P['kit_emit'],
+                         material_hook=R.add_fog, detail_policy=pol, obs_emit=R.P['obs_emit'], street_emit=R.P['street_emit'], pool_emit=R.P['pool_emit'],
+                         job_points=job, job_dist=R.P['kit_job_dist'], tree_job_dist=R.P['kit_tree_dist'])
     st = ck.last_stats
-    print('CITYKIT center %s radius %.0f cams %d  %s' % ([round(c) for c in center], radius, len(pts),
-          {k: st.get(k) for k in ('detail_counts', 'houses', 'tris_total', 't_total', 'materials')}))
+    print('CITYKIT center %s radius %.0f job cams %d  %s' % ([round(c) for c in center], radius, len(job),
+          {k: st.get(k) for k in ('detail_counts', 'houses', 'tris_total', 't_total', 'materials', 'job_downgraded_buildings')}))
     return root
