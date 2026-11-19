@@ -380,7 +380,7 @@ def main():
     if 'pos' in P:
         cand = [(tuple(P['pos']), P.get('yaw', 0.0))]
     else:
-        cand = [((x, y, -0.020), yw) for yw in (0, 12, 24, 36) for x in (0.030, 0.034, 0.038) for y in (-0.070, -0.055, -0.040)]
+        cand = [((x, y, -0.020), yw) for yw in (0, 12, 24, 36) for x in (0.034, 0.038, 0.042) for y in (-0.085, -0.070, -0.055, -0.040)]
     bestc = None
     for (pos, yw) in cand:
         Mh = np.array(Matrix.Translation(pos) @ Matrix.Rotation(math.radians(yw), 4, 'Z'))
@@ -389,8 +389,8 @@ def main():
         if bestc is None or sc < bestc[0]:
             bestc = (sc, pos, yw, ang)
         print('cand pos %s yaw %d score %.2f' % (np.round(pos, 3), yw, sc))
-    sc, pos, yaw, ang = bestc; roll = P.get('roll', 0.0)
-    print('hand BEST pos', pos, 'yaw', yaw, 'score %.2f' % sc, 'angles', ang)
+    best_sc, pos, yaw, ang = bestc; roll = P.get('roll', 0.0)
+    print('hand BEST pos', pos, 'yaw', yaw, 'score %.2f' % best_sc, 'angles', ang)
     ao.matrix_world = Matrix.Translation(pos) @ Matrix.Rotation(math.radians(yaw), 4, 'Z') @ Matrix.Rotation(math.radians(roll), 4, 'Y')
     curl = {'Index': (8, 14, 8)}; curl.update(ang)
     curl.update({k: tuple(v) for k, v in P.get('curl', {}).items()})
