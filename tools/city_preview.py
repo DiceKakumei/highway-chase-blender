@@ -191,6 +191,21 @@ def build_new(cam_pts, hour, center, radius, legacy):
     return st
 
 
+def diag_colors():
+    """確認用(params の diag=true): 街路の材質を、役割ごとの単色(発光)に置き換えて、どの面がどの役割かを見る"""
+    cols = {'road': (0.1, 0.2, 1.0), 'curb': (1, 1, 1), 'sidewalk': (0.1, 0.9, 0.1), 'tactile': (1, 0.9, 0), 'tactile_bar': (1, 0.9, 0), 'inuhashiri': (1, 0, 1), 'found_conc': (1, 0.1, 0.1),
+            'setback': (0, 1, 1), 'boundary': (1, 0.5, 0), 'gutter': (0.6, 0.1, 0.9), 'flashing': (0.5, 0.5, 0.5), 'found_stone': (1, 0.3, 0.3), 'found_tile': (1, 0.3, 0.3)}
+    seen = {}
+    for m in bpy.data.materials:
+        if not m.name.startswith('citystreet_'):
+            continue
+        role = '_'.join(m.name.split('_')[1:-1]); c = cols.get(role, (0.4, 0.4, 0.4)); seen[role] = c
+        nt = m.node_tree; nt.nodes.clear()
+        out = nt.nodes.new('ShaderNodeOutputMaterial'); em = nt.nodes.new('ShaderNodeEmission'); em.inputs['Color'].default_value = (*c, 1.0); em.inputs['Strength'].default_value = 1.5
+        nt.links.new(em.outputs[0], out.inputs['Surface'])
+    log('DIAG roles', json.dumps(seen))
+
+
 def main():
     city = ck.load_city(CITY)
     perf = dict(samples=SAMPLES, res=RES, emit=EMIT, views={}, builds={}, renders={}, overlap={})
@@ -244,6 +259,8 @@ def main():
             except Exception as e:
                 import traceback; traceback.print_exc()
                 log('ERR build', key, repr(e)); continue
+            if PRM.get('diag'):
+                diag_colors()
             co = set_cam(next(iter(vs.values())))
             for vk, v in vs.items():
                 move_cam(co, v)
