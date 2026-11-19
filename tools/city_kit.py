@@ -55,7 +55,7 @@ DEFAULT_POLICY = dict(
     street_lights=24,                # near の街灯の実ライト(スポット)の上限
     trees=True, tree_cap=1800, tree_dist=420.0,
     scale_min={'office': 0.72, 'zakkyo': 0.70, 'mansion': 0.58}, scale_max=1.45,   # far の箱へ近似するときの許容の伸縮(矩形がキットの寸法から外れる割合)
-    solid_scale=(1.0, 1.25),         # near / mid にできる伸縮の範囲(実立体は伸ばさないので、外れたら far)。 下限1.0 = キットの箱が輪郭の矩形からはみ出さない
+    solid_scale=(0.80, 1.25),        # near / mid にできる伸縮の範囲(外れたら far)。 実立体は make_solid_building で x・y を伸縮して矩形(wf x df)にぴったり合わせる
     split=True,
     piece_steps=6,                   # 道路を切る区間の長さ(4m x 6 = 24m)。 区間ごとに、壁までの最小の距離から断面を決める
     ultra_stride=4,                  # 150mより遠い道路の帯は、4mの点を 4つおき(16m)に
@@ -354,17 +354,6 @@ def kit_dims(kind, w_front, d_depth):
     return nW * P, nD * P, nW, nD
 
 
-def kit_dims_floor(kind, w_front, d_depth):
-    """実立体用: キットの箱が矩形に収まる寸法(モジュールの整数倍を切り捨て)。 -> (W, D, nW, nD) / None(最小寸法に満たない)"""
-    S = bk.SPECS[kind]; P = S['P']
-    nW = int(w_front / P + 1e-9); nD = int(d_depth / P + 1e-9)
-    if kind == 'mansion' and nW % 2:
-        nW -= 1
-    if nW < S['minb'][0] or nD < S['minb'][1]:
-        return None
-    return nW * P, nD * P, nW, nD
-
-
 def floors_for(kind, h):
     S = bk.SPECS[kind]
     return max(2, int(round((h - S['G']) / S['Hf'])) + 1)
@@ -558,26 +547,19 @@ def plan_buildings(city, center, radius, cam, hour, seed, policy, ridx=None, cor
             rec.update(floors=floors_for(kind, h), W=W, D=D, sx=wf / W, sy=df / D, age=S['age'][0] + (S['age'][1] - S['age'][0]) * r2.random(),
                        r=0.5 * math.hypot(wf, df), dcam=cam_dist2d(cam, rc[0], rc[1], 0.5 * math.hypot(wf, df)))
             recs.append(rec)
-    # detail の割り当て: 距離の閾値 + 棟数の上限(近い順)。 実立体(near/mid)はキットの寸法 W x D のまま置くので、足元の矩形もその大きさにする
+    # detail の割り当て: 距離の閾値 + 棟数の上限(近い順)。 実立体(near/mid)も、far と同じく矩形(wf x df)にぴったり合うよう x・y を伸縮して置く(伸縮 0.8〜1.25)
     recs.sort(key=lambda r: r['dcam'])
     n_near = n_mid = 0
     for r in recs:
         d = 'far'
         lo, hi = pol['solid_scale']
-        if legacy:
-            ok = cam is not None and lo <= r['sx'] <= hi and lo <= r['sy'] <= hi
-        else:
-            kd = kit_dims_floor(r['kind'], r['wf'], r['df']) if cam is not None else None
-            ok = kd is not None and r['wf'] / kd[0] <= hi and r['df'] / kd[1] <= hi
+        ok = cam is not None and lo <= r['sx'] <= hi and lo <= r['sy'] <= hi
         if ok:
             if r['dcam'] <= pol['near'] and n_near < pol['max_near']:
                 d = 'near'; n_near += 1
             elif r['dcam'] <= pol['mid'] and n_mid < pol['max_mid']:
                 d = 'mid'; n_mid += 1
         r['detail'] = d
-        if d != 'far' and not legacy:
-            r['W'], r['D'] = float(kd[0]), float(kd[1]); r['sx'] = r['sy'] = 1.0
-            r['wf'] = float(r['W']); r['df'] = float(r['D'])
     kinds = {}
     for r in recs:
         kinds[r['kind']] = kinds.get(r['kind'], 0) + 1
@@ -1088,7 +1070,7 @@ def plan_all(city, center, radius, cam, hour, seed, policy=None):
     pol = dict(DEFAULT_POLICY); pol.update(policy or {})
     legacy = bool(pol.get('legacy'))
     if legacy:
-        pol.update(solid_scale=(0.80, 1.25), piece_steps=15)
+        pol.update(piece_steps=15)
     night = bool(hour >= 17.0 or hour < 5.5)
     cam_a = None
     if cam is not None and len(cam):
@@ -1496,7 +1478,7 @@ def make_solid_building(rec, cx, hour, ground_z, root, with_base=True):
     kind = rec['kind']; det = rec['detail']
     nm = 'bld%d_%d_%s' % (rec['id'], rec['sub'], det)
     r = bk.make_building(kind, rec['W'], rec['D'], rec['floors'], seed=rec['seed'], detail=det, night=cx.night, hour=hour, age=rec['age'], name=nm, emit=cx.emit)
-    r.location = (rec['c'][0], rec['c'][1], ground_z); r.rotation_euler = (0.0, 0.0, rec['theta']); r.parent = root
+    r.location = (rec['c'][0], rec['c'][1], ground_z); r.rotation_euler = (0.0, 0.0, rec['theta']); r.scale = (rec['sx'], rec['sy'], 1.0); r.parent = root
     body = [c for c in r.children if c.type == 'MESH'][0]
     G = bk.SPECS[kind]['G']
     base = None
