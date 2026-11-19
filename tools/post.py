@@ -1,7 +1,7 @@
 """EXR(リニア) -> 仕上げ(にじみ・トーンマップ・周辺減光・粒子・タイトル・暗転) -> PNG。
 usage: python tools/post.py <exr_dir> <png_dir> [--params JSON] [--sheet sheet.jpg] [--notitle] [--both] [--res WxH]
 (--res: 出力の解像度。コマがそれより大きければ縮小(INTER_AREA)、小さければエラー[拡大しない])
-(--both: コマ720以降は続編用の仕上げ[題字なし・0.8秒で明ける・終わりの暗転なし]、tは f-720)
+(--both: コマ720以降は続編用の仕上げ[題字なし・暗転なし]、tは f-720。追跡との間も暗転なし=1繋ぎ)
 コマ番号 f はファイル名(0024.exr)から取り、t = f / 24。"""
 import os, sys, json, glob
 import numpy as np, cv2
@@ -14,10 +14,10 @@ G = {
     'contrast': 1.06, 'sat': 1.05,
     'vignette': 0.22, 'grain': 0.012,
     'lift': [0.0, 0.0, 0.004],
-    'title': 1, 'fade_in': 0.0, 'fade_out': 1,     # 続編は title=0, fade_in=0.8, fade_out=0
+    'title': 1, 'fade_in': 0.0, 'fade_out': 0,     # 追跡と続編は1繋ぎのシーン。暗転(fade_out/fade_in)は入れない(ユーザー指示 2026-11-19)。足すのはユーザーが指示したときだけ
 }
 SEQ_START = 720                                       # --both: このコマから続編(t は f-720 から数え直す)
-SEQ_G = {'title': 0, 'fade_in': 0.8, 'fade_out': 0}   # 続編の仕上げ(grade の 'seq' で上書き可)
+SEQ_G = {'title': 0, 'fade_in': 0.0, 'fade_out': 0}   # 続編の仕上げ(題字なし・暗転なし。grade の 'seq' で上書き可)
 FONTS = ['/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc', '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc',
          'C:/Windows/Fonts/YuGothB.ttc', 'C:/Windows/Fonts/meiryob.ttc']
 

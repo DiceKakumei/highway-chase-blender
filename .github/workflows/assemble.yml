@@ -2,6 +2,7 @@ name: assemble
 # 合体専用(Blenderを使わない)。Releaseに残っているEXRを、必要なコマだけ集めて、仕上げ(post.py)→mp4にする。描き直さない。
 #   gh workflow run assemble.yml -R DiceKakumei/highway-chase-blender -f res=960x540 -f segments='[{"tag":"r31","src":"0-719","dst":0},{"tag":"r47","src":"106-143","dst":106},{"tag":"r44","src":"0-359","dst":720},{"tag":"r46","src":"125-250","dst":845}]'
 # segments: 重ねる順に並べた配列。後ろが前を上書き。src=そのタグのコマ番号(例 "0-719" / "125,151,228-247")、dst=srcの最初のコマの出力番号。
+# 追跡と続編は1繋ぎのシーン: 暗転(post.py の fade_in/fade_out)・無音・BGMの切れ目を入れない(ユーザー指示 2026-11-19)。音は45秒の1本(audio_full45.wav)。
 #   tarに無いコマは飛ばす(上書きしない)。出力コマに抜けがあればエラー。
 # res: 出力の解像度。大きいコマは縮小(INTER_AREA)、小さいコマがあればエラー(拡大しない)。
 # store=1: 合体した全コマのEXRを新しいRelease(a<番号>)に exr-NNN.tar で保存。以後は segments の1行で使える。
@@ -21,11 +22,11 @@ on:
         description: "1 = コマ720以降を続編の仕上げにする(post.py --both)"
         default: "1"
       audio:
-        description: "音声(リポジトリ内のパス)"
-        default: "assets/audio_acid_v5.wav"
+        description: "音声(リポジトリ内のパス)。全体45秒の1本(tools/audio_full45.py で作る)が既定"
+        default: "assets/audio_full45.wav"
       audio2:
-        description: "audio の後ろにつなぐ音声(続編 assets/audio_sequel.wav)。空ならつながない"
-        default: "assets/audio_sequel.wav"
+        description: "audio の後ろにつなぐ音声。空ならつながない(全体45秒を1本で作った audio_full45.wav を使うときは空。追跡と続編の音の切れ目を作らない)"
+        default: ""
       store:
         description: "1 = 合体した全コマのEXRを新しいReleaseに保存し直す"
         default: "0"
