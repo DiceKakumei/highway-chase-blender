@@ -1,5 +1,6 @@
 """EXR(リニア) -> 仕上げ(にじみ・トーンマップ・周辺減光・粒子・タイトル・暗転) -> PNG。
-usage: python tools/post.py <exr_dir> <png_dir> [--params JSON] [--sheet sheet.jpg] [--notitle]
+usage: python tools/post.py <exr_dir> <png_dir> [--params JSON] [--sheet sheet.jpg] [--notitle] [--both]
+(--both: コマ720以降は続編用の仕上げ[題字なし・0.8秒で明ける・終わりの暗転なし]、tは f-720)
 コマ番号 f はファイル名(0024.exr)から取り、t = f / 24。"""
 import os, sys, json, glob
 import numpy as np, cv2
@@ -14,6 +15,8 @@ G = {
     'lift': [0.0, 0.0, 0.004],
     'title': 1, 'fade_in': 0.0, 'fade_out': 1,     # 続編は title=0, fade_in=0.8, fade_out=0
 }
+SEQ_START = 720                                       # --both: このコマから続編(t は f-720 から数え直す)
+SEQ_G = {'title': 0, 'fade_in': 0.8, 'fade_out': 0}   # 続編の仕上げ(grade の 'seq' で上書き可)
 FONTS = ['/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc', '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc',
          'C:/Windows/Fonts/YuGothB.ttc', 'C:/Windows/Fonts/meiryob.ttc']
 
@@ -99,33 +102,38 @@ def title_layer(w, h):
     return lay
 
 
-def finish(out, f, notitle=False):
+def finish(out, f, notitle=False, both=False):
+    g = G
+    if both and f >= SEQ_START:
+        g = dict(G, **SEQ_G, **G.get('seq', {})); f = f - SEQ_START
     t = f / 24.0
     h, w = out.shape[:2]
     a = min((t - 0.5) / 0.5, (4.2 - t) / 0.7)
     a = min(1.0, max(0.0, a))
-    if a > 0 and not notitle and G['title']:
+    if a > 0 and not notitle and g['title']:
         lay = np.asarray(title_layer(w, h)).astype(np.float32) / 255.0
         al = lay[..., 3:4] * a
         out = out * (1 - al) + lay[..., :3] * al
     k = 1.0
-    if G['fade_out']:
+    if g['fade_out']:
         k *= 1 - sm((t - 26.0) / 3.8)
-    if G['fade_in'] > 0:
-        k *= sm(t / G['fade_in'])
+    if g['fade_in'] > 0:
+        k *= sm(t / g['fade_in'])
     return out * k
 
 
 def main():
     args = sys.argv[1:]
     src, dst = args[0], args[1]
-    sheet = None; notitle = False
+    sheet = None; notitle = False; both = False
     i = 2
     while i < len(args):
         if args[i] == '--params':
             G.update(json.loads(args[i + 1])); i += 2
         elif args[i] == '--sheet':
             sheet = args[i + 1]; i += 2
+        elif args[i] == '--both':
+            both = True; i += 1
         elif args[i] == '--notitle':
             notitle = True; i += 1
         else:
@@ -136,7 +144,7 @@ def main():
     for p in files:
         f = int(os.path.basename(p)[:4])
         lin = read_exr(p)
-        out = finish(grade(lin, f), f, notitle)
+        out = finish(grade(lin, f), f, notitle, both)
         bgr = (np.clip(out[..., ::-1], 0, 1) * 255 + 0.5).astype(np.uint8)
         cv2.imwrite(os.path.join(dst, '%04d.png' % f), bgr)
         if sheet and (len(files) <= 60 or files.index(p) % max(1, len(files) // 60) == 0):

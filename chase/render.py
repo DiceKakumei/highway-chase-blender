@@ -66,10 +66,11 @@ P = {
     'dbg_truck': None,       # 確認用カメラ(主役のトラック基準)
     'relax_iters': 10,       # 車体メッシュの凹凸をならす回数(0 = ならさない)
     'dbg_idx': None,         # 確認用カメラの対象(S['cars'] の番号。None = 主役のトラック)
-    'scene': 'main',         # 'sequel' = 続編(打ち合い)。motion の代わりに sequel を使う
+    'scene': 'main',         # 'sequel' = 続編(打ち合い)。motion の代わりに sequel を使う。'both' = コマ0〜719が追跡、720〜が続編(コマ-720)
     'dbg_cases': None,       # 続編の確認用: [[τ, カメラxyz, 見る先xyz, fov], ...](Bの位置から。コマの順に使う)
 }
 
+SEQ_START = 720                  # scene='both': このコマから続編
 Y0, Y1 = -300.0, 2700.0          # road extent (three.js Z0=300 .. Z1=-2700)
 LEN = Y1 - Y0
 YC = (Y0 + Y1) / 2
@@ -1162,10 +1163,16 @@ def main():
     for i in range(0, len(argv) - 1, 2):
         a[argv[i].lstrip('-')] = argv[i + 1]
     P.update(json.loads(a['params'] or '{}'))
+    frames = parse_frames(a['frames'])
+    foff = 0                                                # 続編のコマ番号 = f - foff
+    if P['scene'] == 'both':                                # 1チャンクは追跡か続編のどちらか一方だけ(prep が720で区切る)
+        foff = SEQ_START if min(frames) >= SEQ_START else 0
+        assert foff or max(frames) < SEQ_START, 'chunk spans the %d boundary: %s..%s' % (SEQ_START, min(frames), max(frames))
+        P['scene'] = 'sequel' if foff else 'main'
+        print('SCENE both -> %s (frame offset %d)' % (P['scene'], foff))
     if P['scene'] == 'sequel':
         M = SQ
     w, h = (int(v) for v in a['res'].split('x'))
-    frames = parse_frames(a['frames'])
     os.makedirs(a['out'], exist_ok=True)
     T0 = time.time()
     bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -1188,7 +1195,7 @@ def main():
     for fi, f in enumerate(frames):
         P['_fi'] = fi
         t1 = time.time()
-        t, k = apply_frame(S, cam, f, bool(P['motion_blur']))
+        t, k = apply_frame(S, cam, f - foff, bool(P['motion_blur']))
         t2 = time.time()
         bpy.context.scene.render.filepath = os.path.join(os.path.abspath(a['out']), '%04d' % f)
         bpy.ops.render.render(write_still=True)

@@ -4,6 +4,8 @@ name: render
 #   gh workflow run render.yml -f frames="0-719" -f chunks=40 -f samples=64 -f res=1280x720 -f video=1
 # 一部のコマだけ描き直して、残りは前回の結果を使う(base に前回の Release タグを指定):
 #   gh workflow run render.yml -f frames="120-155" -f chunks=2 -f samples=40 -f res=1280x720 -f video=1 -f base=r31
+# 追跡+続編を1本(45秒)で描く(コマ0-719=追跡、720-1079=続編。チャンクは720で区切られる):
+#   gh workflow run render.yml -f frames="0-1079" -f chunks=40 -f samples=24 -f res=960x540 -f video=1 -f audio2=assets/audio_sequel.wav -f params='{"scene":"both"}'
 #   (前回と同じ samples/res/grade/params 以外の見た目の値にすると、描き直したコマだけ色味や画質が変わる)
 on:
   workflow_dispatch:
@@ -30,6 +32,9 @@ on:
       audio:
         description: "video=1 のとき使う音声(リポジトリ内のパス)"
         default: "assets/audio_acid_v5.wav"
+      audio2:
+        description: "video=1 のとき、audio の後ろにつなぐ音声(続編 assets/audio_sequel.wav)。空ならつながない"
+        default: ""
       base:
         description: "前回の Release タグ(例: r31)。指定すると、そのEXRに今回描いたコマを上書きして合体する。空なら今回のコマだけ"
         default: ""
@@ -46,6 +51,7 @@ jobs:
         env:
           FRAMES: ${{ inputs.frames }}
           CHUNKS: ${{ inputs.chunks }}
+          PARAMS: ${{ inputs.params }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
@@ -58,11 +64,22 @@ jobs:
               else:
                   fr.append(int(part))
           n = max(1, min(int(os.environ['CHUNKS']), len(fr)))
+          # scene=both: コマ720が追跡と続編の境目。1チャンクが両方をまたがないよう、境目で先に分ける
+          groups = [fr]
+          if json.loads(os.environ.get('PARAMS') or '{}').get('scene') == 'both':
+              groups = [g for g in ([f for f in fr if f < 720], [f for f in fr if f >= 720]) if g]
+          if len(groups) == 2:
+              na = min(max(1, round(n * len(groups[0]) / len(fr))), n - 1) if n > 1 else 1
+              ns = [na, max(1, n - na)]
+          else:
+              ns = [n]
           items = []
-          for i in range(n):
-              sub = fr[i * len(fr) // n:(i + 1) * len(fr) // n]
-              if sub:
-                  items.append({"idx": "%03d" % i, "frames": ",".join(str(f) for f in sub)})
+          for g, k in zip(groups, ns):
+              k = max(1, min(k, len(g)))
+              for i in range(k):
+                  sub = g[i * len(g) // k:(i + 1) * len(g) // k]
+                  if sub:
+                      items.append({"idx": "%03d" % len(items), "frames": ",".join(str(f) for f in sub)})
           print("matrix=" + json.dumps({"include": items}))
           print("tag=r${{ github.run_number }}")
           PY
@@ -115,6 +132,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GRADE: ${{ inputs.grade }}
+          PARAMS: ${{ inputs.params }}
           BASE: ${{ inputs.base }}
         run: |
           mkdir -p dl exr png
@@ -138,7 +156,8 @@ jobs:
           sys.exit(1 if miss else 0)
           PY2
           fi
-          python3 tools/post.py exr png --params "$GRADE" --sheet sheet.jpg
+          BOTH=""; if echo "$PARAMS" | grep -q '"both"'; then BOTH="--both"; fi
+          python3 tools/post.py exr png --params "$GRADE" $BOTH --sheet sheet.jpg
           python3 - <<'PY'
           import json, glob
           fr = []
@@ -156,8 +175,15 @@ jobs:
         if: ${{ inputs.video == '1' }}
         run: |
           ls png/*.png | wc -l
-          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i ${{ inputs.audio }} -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -shortest -movflags +faststart chase_hq.mp4
-          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i ${{ inputs.audio }} -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 20 -maxrate 6M -bufsize 12M -pix_fmt yuv420p -c:a aac -b:a 192k -ar 48000 -shortest -movflags +faststart chase_phone.mp4
+          AUDIO="${{ inputs.audio }}"
+          if [ -n "${{ inputs.audio2 }}" ]; then
+            # 追跡の音(終わりは無音まで減衰)の直後に続編の音(頭はほぼ無音)をそのままつなぐ。つなぎ目は約29.5〜30.1秒の無音
+            ffmpeg -loglevel error -y -i "$AUDIO" -i "${{ inputs.audio2 }}" -filter_complex "[0:a]aresample=48000,aformat=channel_layouts=stereo[a0];[1:a]aresample=48000,aformat=channel_layouts=stereo[a1];[a0][a1]concat=n=2:v=0:a=1[a]" -map "[a]" -c:a pcm_s24le audio_all.wav
+            AUDIO=audio_all.wav
+          fi
+          ffprobe -v error -show_entries format=duration -of default=nw=1 "$AUDIO"
+          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i $AUDIO -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -shortest -movflags +faststart chase_hq.mp4
+          ffmpeg -loglevel error -y -framerate 24 -start_number 0 -i png/%04d.png -i $AUDIO -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 20 -maxrate 6M -bufsize 12M -pix_fmt yuv420p -c:a aac -b:a 192k -ar 48000 -shortest -movflags +faststart chase_phone.mp4
           for f in chase_hq.mp4 chase_phone.mp4; do ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames,width,height -show_entries format=duration,size -of default=nw=1 $f; done
       - name: Upload
         env: { GH_TOKEN: "${{ github.token }}" }
