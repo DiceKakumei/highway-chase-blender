@@ -67,6 +67,7 @@ P = {
     'relax_iters': 10,       # 車体メッシュの凹凸をならす回数(0 = ならさない)
     'dbg_idx': None,         # 確認用カメラの対象(S['cars'] の番号。None = 主役のトラック)
     'scene': 'main',         # 'sequel' = 続編(打ち合い)。motion の代わりに sequel を使う。'both' = コマ0〜719が追跡、720〜が続編(コマ-720)
+    'rider_relax_iters': 30, 'rider_rough': 0.5, 'rider_coat_mul': 0.15,   # ライダー(胴体・頭)の部分だけ: 追加でなめらかにする回数 / ツヤを消す(粗さの下限・コートの倍率)
     'city_kit': 0,           # 1 = 新しい街(tools/city_kit)。ジョブのカメラの点の周りだけ near/mid
     'kit_hour': 19.0, 'kit_emit': 8.0, 'kit_radius': 1100.0, 'kit_policy': None, 'kit_job_dist': 600.0, 'kit_tree_dist': 900.0,
     'dbg_cases': None,       # 続編の確認用: [[τ, カメラxyz, 見る先xyz, fov], ...](Bの位置から。コマの順に使う)
@@ -658,7 +659,7 @@ def smooth_mesh(me, angle_deg=62.0, weld=2e-5):
     print('   smooth_mesh: verts %d -> %d, faces %d' % (n0, len(me.vertices), len(me.polygons)))
 
 
-def relax_mesh(me, iters=3, factor=0.5, max_move=0.015):
+def relax_mesh(me, iters=3, factor=0.5, max_move=0.015, only=None):
     """Meshy の形はボコボコで、アップだと角ばった面が目立つ。硬い辺(と端)に触れていない頂点だけ、まわりの平均へ寄せてならす。"""
     if iters <= 0:
         return
@@ -668,7 +669,7 @@ def relax_mesh(me, iters=3, factor=0.5, max_move=0.015):
         if (not e.smooth) or len(e.link_faces) != 2:
             keep.add(e.verts[0].index); keep.add(e.verts[1].index)
     bm.verts.ensure_lookup_table()
-    verts = [v for v in bm.verts if v.index not in keep]
+    verts = [v for v in bm.verts if v.index not in keep and (only is None or v.index in only)]
     p0 = np.array([v.co[:] for v in verts]) if verts else None
     for _ in range(iters):
         bmesh.ops.smooth_vert(bm, verts=verts, factor=factor, use_axis_x=True, use_axis_y=True, use_axis_z=True)
@@ -734,14 +735,21 @@ def vehicle_material(mat, kind, tail_mask):
                 m = math_node(nt, 'MULTIPLY', math_node(nt, 'SUBTRACT', m, 0.32), 6.0, clamp=True)
                 nt.links.new(src, b.inputs['Emission Color'])
                 nt.links.new(math_node(nt, 'MULTIPLY', m, P['tail_mask_emit']), b.inputs['Emission Strength'])
+    for n_ in nt.nodes:
+        if n_.type == 'TEX_IMAGE':
+            n_.interpolation = 'Cubic'                      # アップで画素が角ばらないように
     if kind == 'body':
+        at = nt.nodes.new('ShaderNodeAttribute'); at.attribute_name = 'rider_mask'; at.attribute_type = 'GEOMETRY'     # ライダーの部分=1(バイクは0)
+        rid = at.outputs['Fac']
         try:
             b.inputs['Coat Weight'].default_value = P['coat']; b.inputs['Coat Roughness'].default_value = 0.06
+            # ライダー(革・ヘルメット)は、バイクの塗装ほどクリアコートを強くしない。 強いコートは、Meshyのボコボコの形を、アップで映してしまう
+            nt.links.new(math_node(nt, 'MULTIPLY', P['coat'], math_node(nt, 'SUBTRACT', 1.0, math_node(nt, 'MULTIPLY', rid, 1.0 - P['rider_coat_mul']))), b.inputs['Coat Weight'])
         except Exception as e:
             print('coat:', e)
         rl = b.inputs['Roughness'].links
-        if rl:
-            nt.links.new(math_node(nt, 'MULTIPLY', rl[0].from_socket, P['body_rough_mul']), b.inputs['Roughness'])
+        rough = math_node(nt, 'MULTIPLY', rl[0].from_socket, P['body_rough_mul']) if rl else b.inputs['Roughness'].default_value * P['body_rough_mul']
+        nt.links.new(math_node(nt, 'MAXIMUM', rough, math_node(nt, 'MULTIPLY', rid, P['rider_rough'])), b.inputs['Roughness'])
     add_fog(mat)
 
 
@@ -820,6 +828,13 @@ def build_proto(name):
     bpy.data.objects.remove(ow)
 
     relax_mesh(body_me, P['relax_iters'])
+    if rigw is not None:                                   # ライダー(胴体・頭のボーンの重み)の頂点: 追加でなめらかに + 属性 rider_mask(材質がツヤを抑える)
+        iT, iH = RG.BONES.index('torso'), RG.BONES.index('head')
+        mask = np.clip(rigw[:, iT] + 0.5 * rigw[:, iH], 0.0, 1.0).astype(np.float32)
+        if P['rider_relax_iters'] > 0:
+            relax_mesh(body_me, P['rider_relax_iters'], 0.5, 0.02, only=set(np.nonzero(rigw[:, iT] + rigw[:, iH] > 0.5)[0].tolist()))
+        at_ = body_me.attributes.get('rider_mask') or body_me.attributes.new('rider_mask', 'FLOAT', 'POINT')
+        at_.data.foreach_set('value', mask)
     # lamps: emissive discs placed on the body surface by ray casting from the front / rear
     me = body_me
     bvh = BVHTree.FromPolygons([v.co.copy() for v in me.vertices], [tuple(p.vertices) for p in me.polygons])
