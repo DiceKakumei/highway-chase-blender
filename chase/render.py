@@ -67,7 +67,7 @@ P = {
     'relax_iters': 10,       # 車体メッシュの凹凸をならす回数(0 = ならさない)
     'dbg_idx': None,         # 確認用カメラの対象(S['cars'] の番号。None = 主役のトラック)
     'scene': 'main',         # 'sequel' = 続編(打ち合い)。motion の代わりに sequel を使う。'both' = コマ0〜719が追跡、720〜が続編(コマ-720)
-    'rider_relax_iters': 30, 'rider_rough': 0.5, 'rider_coat_mul': 0.15,   # ライダー(胴体・頭)の部分だけ: 追加でなめらかにする回数 / ツヤを消す(粗さの下限・コートの倍率)
+    'rider_relax_iters': 60, 'rider_rough': 0.5, 'rider_coat_mul': 0.15,   # ライダー(胴体・頭)の部分だけ: 追加でなめらかにする回数 / ツヤを消す(粗さの下限・コートの倍率)
     'city_kit': 0,           # 1 = 新しい街(tools/city_kit)。ジョブのカメラの点の周りだけ near/mid
     'kit_hour': 19.0, 'kit_emit': 8.0, 'kit_radius': 1100.0, 'kit_policy': None, 'kit_job_dist': 600.0, 'kit_tree_dist': 900.0,
     'dbg_cases': None,       # 続編の確認用: [[τ, カメラxyz, 見る先xyz, fov], ...](Bの位置から。コマの順に使う)
@@ -831,8 +831,17 @@ def build_proto(name):
     if rigw is not None:                                   # ライダー(胴体・頭のボーンの重み)の頂点: 追加でなめらかに + 属性 rider_mask(材質がツヤを抑える)
         iT, iH = RG.BONES.index('torso'), RG.BONES.index('head')
         mask = np.clip(rigw[:, iT] + 0.5 * rigw[:, iH], 0.0, 1.0).astype(np.float32)
+        rset = set(np.nonzero(rigw[:, iT] + rigw[:, iH] > 0.5)[0].tolist())
         if P['rider_relax_iters'] > 0:
-            relax_mesh(body_me, P['rider_relax_iters'], 0.5, 0.02, only=set(np.nonzero(rigw[:, iT] + rigw[:, iH] > 0.5)[0].tolist()))
+            bm_ = bmesh.new(); bm_.from_mesh(body_me)                 # ライダーの辺は、硬い辺(角ばり)をやめて滑らかにつなぐ(角は ヘルメットの面が角ばって見える原因)
+            for e_ in bm_.edges:
+                if e_.verts[0].index in rset and e_.verts[1].index in rset:
+                    e_.smooth = True
+            for f_ in bm_.faces:
+                if all(v_.index in rset for v_ in f_.verts):
+                    f_.smooth = True
+            bm_.to_mesh(body_me); bm_.free()
+            relax_mesh(body_me, P['rider_relax_iters'], 0.5, 0.03, only=rset)
         at_ = body_me.attributes.get('rider_mask') or body_me.attributes.new('rider_mask', 'FLOAT', 'POINT')
         at_.data.foreach_set('value', mask)
     # lamps: emissive discs placed on the body surface by ray casting from the front / rear
