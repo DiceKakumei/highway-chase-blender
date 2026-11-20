@@ -962,9 +962,16 @@ def build_vehicles():
     cars = []
     pick = M.rng(555)
     traffic = M.traffic()
-    rm = SQ.car_removals(traffic)                           # 続編の2台・カメラの邪魔になる車: いきなり消さず、邪魔になる直前のカット(前作の最後のカット含む)で消す
+    # 周囲の車は、主役(A・B・主役のトラック)とカメラの動きを先に決めたうえで、後から重ならないように作ってある(motion.traffic → conflicts)。
+    # 途中で消す・出す処理は無い: 作った車は、最初から最後まで同じ車線を同じ速さで走り続ける。 全ジョブ共通。
+    rm = {}
     hidden = set()
-    print('car removals (world t): %s' % sorted(rm.items(), key=lambda a: a[1]))
+    _mm = sys.modules['motion']; _tl = _mm._full_timeline()
+    far_cars = set()
+    for i, c in enumerate(traffic):                         # 45秒のどの時刻にも、どのカメラからも 1300m 以上離れている車は、見えないので作らない(全ジョブ共通の判定)
+        zc = c['z0'] - c['v'] * _tl['ts'] if c['dir'] < 0 else c['z0'] + c['v'] * _tl['ts']
+        if float(np.abs(zc - _tl['cp'][:, 2]).min()) > 1300.0 and not c.get('hero'):
+            far_cars.add(i)
     for i, c in enumerate(traffic):
         pal = c['pal']
         if c['kind'] == 'truck':
@@ -973,8 +980,8 @@ def build_vehicles():
             q = pick()
             name = 'veh_sedan' if q < 0.4 else ('veh_hatch' if q < 0.7 else 'veh_suv')
             col = SUV_VARS[pal] if name == 'veh_suv' else (*WHITE_TINTS[pal], 0.5)
-        if i in hidden:
-            continue                                        # 続編の2台・カメラの邪魔になる車は置かない(乱数は進めてある)
+        if i in hidden or i in far_cars:
+            continue
         inst = instance(protos[name], 'Car%03d' % i, color=col)
         if name == 'veh_truck':
             bpy.data.objects['Car%03d_body' % i].pass_index = cab[1]

@@ -312,6 +312,67 @@ def _hits_camera(c):
     return False
 
 
+_FULL = {}
+
+
+def _full_timeline(step=0.05, tmax=45.0):
+    """追跡(0〜30秒)+続編(30〜45秒)の、主役2台(A・B)の位置とカメラ(位置・見る先)の時刻表。 周囲の車は、これを先に決めたうえで、後から重ならないように作る"""
+    if 'tl' in _FULL:
+        return _FULL['tl']
+    import sequel as _SQ
+    ts = np.arange(0.0, tmax + 1e-9, step)
+    ax, az, bx, bz, cp, cl = [], [], [], [], [], []
+    for t in ts:
+        if t < 30.0:
+            ax.append(xA(t)); az.append(zA(t)); bx.append(xB(t)); bz.append(zB(t)); p, l, _, _ = shot_at(t)
+        else:
+            ax.append(_SQ.xA(t)); az.append(_SQ.zA(t)); bx.append(_SQ.xB(t)); bz.append(_SQ.zB(t)); p, l, _, _ = _SQ.shot_at(t)
+        cp.append(p); cl.append(l)
+    tl = dict(ts=ts, A=(np.asarray(ax), np.asarray(az)), B=(np.asarray(bx), np.asarray(bz)), cp=np.asarray(cp, float), cl=np.asarray(cl, float))
+    _FULL['tl'] = tl
+    return tl
+
+
+def _seg_hits_box(p, q, cx, cz, hx, hz):
+    """線分 p→q(x,z 平面。配列)が、箱(中心 cx,cz・半幅 hx,hz。配列)に当たるか。 スラブ法"""
+    d = q - p
+    t0 = np.zeros(len(cx)); t1 = np.ones(len(cx))
+    ok = np.ones(len(cx), bool)
+    for k, (c, h) in enumerate(((cx, hx), (cz, hz))):
+        lo = c - h - p[:, k]; hi = c + h - p[:, k]
+        dk = d[:, k]
+        small = np.abs(dk) < 1e-9
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ta = np.where(small, -np.inf, lo / dk); tb = np.where(small, np.inf, hi / dk)
+        tmin = np.minimum(ta, tb); tmax = np.maximum(ta, tb)
+        ok &= ~(small & ((lo > 0) | (hi < 0)))
+        t0 = np.maximum(t0, np.where(small, -np.inf, tmin)); t1 = np.minimum(t1, np.where(small, np.inf, tmax))
+    return ok & (t0 <= t1)
+
+
+def conflicts(c, why=False):
+    """追跡+続編の全時間(0〜45秒)で、車 c が主役の邪魔になるか。 邪魔 = ①バイクA・Bに近すぎる ②カメラの箱に入る ③低いカメラと見る先の間に入って視界をさえぎる。 邪魔な車は、最初から作らない(途中で消さない)"""
+    tl = _full_timeline()
+    ts = tl['ts']
+    wc, lc = DIM[c['kind']]
+    z = c['z0'] - c['v'] * ts if c['dir'] < 0 else c['z0'] + c['v'] * ts
+    x = np.full(len(ts), float(c['x']))
+    for (bx, bz) in (tl['A'], tl['B']):
+        if np.any((np.abs(z - bz) < (lc + 2.4) / 2 + 3.0) & (np.abs(x - bx) < (wc + 2.4) / 2 + 0.8)):
+            return 'bike' if why else True
+    cp, cl = tl['cp'], tl['cl']                      # three.js 座標 (x, y=高さ, z)
+    low = cp[:, 1] < 4.5
+    if np.any(low & (np.abs(z - cp[:, 2]) < lc / 2 + 4.0) & (np.abs(x - cp[:, 0]) < wc / 2 + 2.2)):
+        return 'camera' if why else True
+    seglen = np.hypot(cl[:, 0] - cp[:, 0], cl[:, 2] - cp[:, 2])
+    sel = low & (seglen > 1.5)
+    if sel.any():
+        P = np.stack([cp[sel, 0], cp[sel, 2]], 1); Q = np.stack([cl[sel, 0], cl[sel, 2]], 1)
+        if np.any(_seg_hits_box(P, Q, x[sel], z[sel], wc / 2 + 0.5, lc / 2 + 0.5)):
+            return 'view' if why else True
+    return None if why else False
+
+
 def traffic():
     """-> list of dict(x, z0, v, dir, kind, hero, pal)  pal = 0..7 (色の番号)"""
     cR = rng(2024)
@@ -324,18 +385,20 @@ def traffic():
             z -= ln / 2
             cand = {'x': lane, 'z0': z, 'v': LANE_V[lane], 'dir': -1, 'kind': kind, 'hero': False}
             near_hero = lane == HERO['lane'] and abs(z - HERO['z0']) < 22
-            if not near_hero and not _hits_bike(cand) and not _hits_camera(cand):
+            if not near_hero and not conflicts(cand):
                 cand['pal'] = int(cR() * 8)
                 cars.append(cand)
             z -= ln / 2 + 12 + cR() * 55
     for lane in (-14.5, -18.5):
-        z = -2500.0
+        z = -3900.0                                            # 45秒ぶん走っても(v=32 → 1440m)、道の全域に対向車が居る
         while z < 140:
             kind = 'truck' if cR() < 0.15 else 'car'
             ln = DIM[kind][1]
             z += ln / 2
             pal = int(cR() * 8)
-            cars.append({'x': lane, 'z0': z, 'v': 32, 'dir': 1, 'kind': kind, 'hero': False, 'pal': pal})
+            cand = {'x': lane, 'z0': z, 'v': 32, 'dir': 1, 'kind': kind, 'hero': False, 'pal': pal}
+            if not conflicts(cand):
+                cars.append(cand)
             z += ln / 2 + 20 + cR() * 90
     return cars
 
