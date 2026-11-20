@@ -67,6 +67,8 @@ P = {
     'relax_iters': 10,       # 車体メッシュの凹凸をならす回数(0 = ならさない)
     'dbg_idx': None,         # 確認用カメラの対象(S['cars'] の番号。None = 主役のトラック)
     'scene': 'main',         # 'sequel' = 続編(打ち合い)。motion の代わりに sequel を使う。'both' = コマ0〜719が追跡、720〜が続編(コマ-720)
+    'rig_w': 'rig_weights.npz',  # ライダー付きバイクの重み(rig_weights_raw.npz = 平滑化前。切り分け用)
+    'rig_static': 0,             # 1 = 切り分け用: 揺れ・前傾・ハンドルを0にして、ライダーを静止ポーズで描く
     'rider_relax_iters': 30, 'rider_rough': 0.5, 'rider_coat_mul': 0.15,   # ライダー(胴体・頭)の部分だけ: 追加でなめらかにする回数 / ツヤを消す(粗さの下限・コートの倍率)
     'city_kit': 0,           # 1 = 新しい街(tools/city_kit)。ジョブのカメラの点の周りだけ near/mid
     'kit_hour': 19.0, 'kit_emit': 8.0, 'kit_radius': 1100.0, 'kit_policy': None, 'kit_job_dist': 600.0, 'kit_tree_dist': 900.0,
@@ -788,7 +790,7 @@ def build_proto(name):
     # バイク+ライダーの疑似リグの重み(tools/make_rig_weights.py が作る)を、頂点の位置の最近傍で写す
     rigw = None
     if c['axes'] == 'bike':
-        z = np.load(os.path.join(d, 'rig_weights.npz'))
+        z = np.load(os.path.join(d, P['rig_w']))
         kd = KDTree(len(z['pos']))
         for i, pp in enumerate(z['pos']):
             kd.insert(pp.tolist(), i)
@@ -1038,6 +1040,8 @@ def key_quat(obj, j, q):
 def key_bike_rig(bk, pose, j):
     """車体のばね上(上下・ピッチ)、ステアリング、ライダー(胴体・頭)の動きをキーに打つ。車輪は路面のまま(root の下で回るだけ)。"""
     cfg = bk['proto']['rig']
+    if P['rig_static']:
+        pose = dict(pose, **{k: 0.0 for k in ('steer', 'body_dz', 'body_pitch', 'torso_roll', 'torso_dz', 'torso_pitch', 'head_roll', 'head_yaw')})
     ld = RG.local_deltas(cfg, pose)
     F = Vector(cfg['frame_pivot'])
     fr = bk['frame']
